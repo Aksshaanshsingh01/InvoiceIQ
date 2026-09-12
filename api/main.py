@@ -4,8 +4,12 @@ InvoiceIQ - FastAPI Application
 API layer for the InvoiceIQ invoice-processing system.
 """
 
+from contextlib import asynccontextmanager
+import logging
+import os
 from pathlib import Path
 from uuid import uuid4
+from dotenv import load_dotenv
 
 from fastapi import (
     FastAPI,
@@ -39,13 +43,82 @@ from database.client_queries import search_clients as search_client_records
 from services.invoice_service import process_invoice
 
 
+load_dotenv()
+
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+
+
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+
+logger = logging.getLogger("invoiceiq.api")
+
+
 # ============================================================
 # CONFIGURATION
 # ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-UPLOAD_DIRECTORY = PROJECT_ROOT / "uploads"
+UPLOAD_DIRECTORY = Path(
+    os.getenv(
+        "INVOICEIQ_UPLOAD_DIRECTORY",
+        str(PROJECT_ROOT / "uploads"),
+    )
+)
+
+MAX_UPLOAD_SIZE = int(
+    os.getenv(
+        "INVOICEIQ_MAX_UPLOAD_SIZE",
+        str(10 * 1024 * 1024),  # 10 MB
+    )
+)
+
+
+# ============================================================
+# APPLICATION LIFESPAN
+# ============================================================
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """
+    Initialize InvoiceIQ resources when the API starts.
+    """
+
+    logger.info("Starting InvoiceIQ API")
+
+    UPLOAD_DIRECTORY.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    initialize_database()
+
+    logger.info("Firestore connection initialized")
+    logger.info(
+        "Upload directory: %s",
+        UPLOAD_DIRECTORY,
+    )
+    logger.info(
+        "Maximum upload size: %d bytes",
+        MAX_UPLOAD_SIZE,
+    )
+
+    yield
+
+    logger.info("Shutting down InvoiceIQ API")
 
 
 # ============================================================
@@ -56,8 +129,8 @@ app = FastAPI(
     title="InvoiceIQ API",
     description="Invoice processing and analytics API",
     version="1.0.0",
+    lifespan=lifespan,
 )
-
 
 # ============================================================
 # STARTUP
@@ -305,7 +378,7 @@ def dashboard():
 # ============================================================
 
 @app.get("/invoices/{invoice_id}")
-def get_invoice(invoice_id: int):
+def get_invoice(invoice_id: str):
     """
     Return one invoice with its items and taxes.
     """
@@ -374,6 +447,8 @@ async def upload_invoice(
 
         PDF upload
             ↓
+        Validate upload
+            ↓
         Save temporary file
             ↓
         Service Layer
@@ -384,10 +459,188 @@ async def upload_invoice(
             ↓
         Duplicate Check
             ↓
-        Database
+        Firestore
+            ↓
+        Delete temporary file
             ↓
         Return result
     """
+
+    upload_path: Path | None = None
+
+    # --------------------------------------------------------
+    # 1. Validate filename
+    # --------------------------------------------------------
+
+    if not file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="No filename provided.",
+        )
+
+    original_filename = Path(file.filename).name
+
+    # --------------------------------------------------------
+    # 2. Validate file extension
+    # --------------------------------------------------------
+
+    file_extension = Path(
+        original_filename
+    ).suffix.lower()
+
+    if file_extension != ".pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are supported.",
+        )
+
+    # --------------------------------------------------------
+    # 3. Read upload with size protection
+    # --------------------------------------------------------
+
+    file_contents = await file.read()
+
+    if not file_contents:
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded PDF is empty.",
+        )
+
+    if len(file_contents) > MAX_UPLOAD_SIZE:
+        max_size_mb = MAX_UPLOAD_SIZE / (1024 * 1024)
+
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"Uploaded file exceeds the maximum allowed size "
+                f"of {max_size_mb:.1f} MB."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # 4. Validate PDF signature
+    # --------------------------------------------------------
+
+    if not file_contents.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=400,
+            detail="The uploaded file is not a valid PDF.",
+        )
+
+    # --------------------------------------------------------
+    # 5. Create temporary upload path
+    # --------------------------------------------------------
+
+    unique_filename = f"{uuid4().hex}.pdf"
+
+    upload_path = (
+        UPLOAD_DIRECTORY
+        / unique_filename
+    )
+
+    # --------------------------------------------------------
+    # 6. Save temporary PDF
+    # --------------------------------------------------------
+
+    try:
+        upload_path.write_bytes(file_contents)
+
+        logger.info(
+            "Processing uploaded invoice: %s",
+            original_filename,
+        )
+
+        # ----------------------------------------------------
+        # 7. Process through Service Layer
+        # ----------------------------------------------------
+
+        result = process_invoice(
+            upload_path,
+            DEFAULT_DATABASE,
+            source_filename=file.filename,
+        )
+
+        # ----------------------------------------------------
+        # 8. Handle duplicate
+        # ----------------------------------------------------
+
+        if result["status"] == "DUPLICATE":
+            raise HTTPException(
+                status_code=409,
+                detail=result,
+            )
+
+        # ----------------------------------------------------
+        # 9. Handle validation failure
+        # ----------------------------------------------------
+
+        if result["status"] == "VALIDATION_FAILED":
+            raise HTTPException(
+                status_code=422,
+                detail=result,
+            )
+
+        # ----------------------------------------------------
+        # 10. Successful processing
+        # ----------------------------------------------------
+
+        logger.info(
+            "Invoice processed successfully: %s",
+            original_filename,
+        )
+
+        return result
+
+    except HTTPException:
+        raise
+
+    except ValueError as exc:
+        logger.warning(
+            "Invoice processing failed for %s: %s",
+            original_filename,
+            exc,
+        )
+
+        raise HTTPException(
+            status_code=422,
+            detail=str(exc),
+        ) from exc
+
+    except Exception:
+        logger.exception(
+            "Unexpected error while processing %s",
+            original_filename,
+        )
+
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "An unexpected error occurred while "
+                "processing the invoice."
+            ),
+        )
+
+    finally:
+        # ----------------------------------------------------
+        # 11. Always delete temporary PDF
+        # ----------------------------------------------------
+
+        if upload_path is not None:
+            try:
+                upload_path.unlink(
+                    missing_ok=True
+                )
+
+                logger.debug(
+                    "Deleted temporary upload: %s",
+                    upload_path,
+                )
+
+            except OSError:
+                logger.exception(
+                    "Failed to delete temporary upload: %s",
+                    upload_path,
+                )
 
     # --------------------------------------------------------
     # 1. Validate file type

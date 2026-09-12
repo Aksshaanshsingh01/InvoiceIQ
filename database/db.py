@@ -1,463 +1,336 @@
 """
-InvoiceIQ - SQLite Database Layer
+InvoiceIQ - Firestore Database Layer
 
-Stores extracted invoices, invoice items, and taxes.
+Firestore replacement for the original SQLite database layer.
 
-Database relationship:
+Document structure:
 
-    invoices
-        |
-        +----< items
-        |
-        +----< taxes
+    invoices/
+        {invoice_id}
+            invoice metadata
+            items: [...]
+            taxes: [...]
 
-The database layer is intentionally independent from:
-    - PDF extraction
-    - batch processing
-    - Excel export
-    - JSON export
+Invoice identity:
+    invoice_number
+    + invoice_type
+    + invoice_date
+    + seller_gstin
+    + buyer_gstin
+
+The deterministic document ID is a SHA-256 hash of that identity.
+This preserves InvoiceIQ's current duplicate-invoice rule.
 """
 
 from __future__ import annotations
 
-import sqlite3
+import hashlib
+import os
 from pathlib import Path
+from typing import Any
+
+import firebase_admin
+from firebase_admin import credentials, firestore
+from google.api_core.exceptions import AlreadyExists
 
 from extraction.invoice_extractor import Invoice
+from dotenv import load_dotenv
 
 
-# ============================================================
-# CONFIGURATION
-# ============================================================
+load_dotenv()
 
-DEFAULT_DATABASE = (
-    Path("output") / "invoiceiq.db"
+# Kept for compatibility with the rest of InvoiceIQ.
+# Firestore does not use a local database path.
+DEFAULT_DATABASE = "firestore"
+
+
+FIRESTORE_COLLECTION = os.getenv(
+    "INVOICEIQ_FIRESTORE_COLLECTION",
+    "invoices",
 )
 
-
 # ============================================================
-# DATABASE CONNECTION
+# FIREBASE INITIALIZATION
 # ============================================================
 
+def _initialize_firebase() -> None:
+    """Initialize Firebase Admin SDK exactly once."""
 
-def get_connection(
-    database_path: str | Path = DEFAULT_DATABASE,
-) -> sqlite3.Connection:
-    """
-    Create a SQLite database connection.
+    try:
+        firebase_admin.get_app()
+        return
+    except ValueError:
+        pass
 
-    Row factory is enabled so rows can be accessed by
-    column name.
-    """
+    service_account_path = os.getenv("FIREBASE_SERVICE_ACCOUNT")
 
-    database_path = Path(
-        database_path
-    )
+    if service_account_path:
+        credential_path = Path(service_account_path).expanduser()
 
-    database_path.parent.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
+        if not credential_path.is_absolute():
+            project_root = Path(__file__).resolve().parent.parent
+            credential_path = project_root / credential_path
 
-    connection = sqlite3.connect(
-        database_path
-    )
+        if not credential_path.is_file():
+            raise FileNotFoundError(
+                "Firebase service-account file was not found: "
+                f"{credential_path}"
+            )
 
-    connection.row_factory = (
-        sqlite3.Row
-    )
+        cred = credentials.Certificate(str(credential_path))
+        firebase_admin.initialize_app(cred)
 
-    # Enable foreign-key enforcement.
-    connection.execute(
-        "PRAGMA foreign_keys = ON"
-    )
+    else:
+        # Google Cloud / Cloud Run:
+        # use Application Default Credentials.
+        firebase_admin.initialize_app()
 
-    return connection
+
+def get_firestore_client():
+    """Return the Firestore client."""
+
+    _initialize_firebase()
+
+    return firestore.client()
 
 
 # ============================================================
 # DATABASE INITIALIZATION
 # ============================================================
 
-
 def initialize_database(
     database_path: str | Path = DEFAULT_DATABASE,
 ) -> None:
     """
-    Create all InvoiceIQ database tables.
+    Verify that Firestore is reachable.
 
-    Safe to call multiple times.
+    Unlike SQLite, Firestore does not require CREATE TABLE statements.
+    Collections/documents are created automatically when data is written.
     """
+    client = get_firestore_client()
 
-    with get_connection(
-        database_path
-    ) as connection:
-
-        connection.executescript(
-            """
-            CREATE TABLE IF NOT EXISTS invoices (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-
-                invoice_number TEXT NOT NULL,
-                invoice_type TEXT NOT NULL,
-
-                invoice_date TEXT,
-                due_date TEXT,
-
-                seller TEXT,
-                seller_gstin TEXT,
-
-                buyer TEXT,
-                buyer_gstin TEXT,
-
-                total_tax REAL NOT NULL DEFAULT 0,
-                round_off REAL NOT NULL DEFAULT 0,
-                total_amount REAL NOT NULL DEFAULT 0,
-                received_amount REAL NOT NULL DEFAULT 0,
-
-                source_file TEXT,
-
-                validation_status TEXT,
-
-                created_at TEXT
-                    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-                UNIQUE (
-                    invoice_number,
-                    invoice_type,
-                    invoice_date,
-                    seller_gstin,
-                    buyer_gstin
-                )
-            );
+    # A lightweight read verifies that the database is reachable.
+    client.collection(FIRESTORE_COLLECTION).limit(1).get()
 
 
-            CREATE TABLE IF NOT EXISTS items (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+# ============================================================
+# INVOICE IDENTITY / DOCUMENT ID
+# ============================================================
 
-                invoice_id INTEGER NOT NULL,
+def _identity_string(
+    invoice_number: str,
+    invoice_type: str,
+    invoice_date: str | None,
+    seller_gstin: str | None,
+    buyer_gstin: str | None,
+) -> str:
+    """
+    Build the canonical identity string used for duplicate detection.
+    """
+    values = [
+        (invoice_number or "").strip().upper(),
+        (invoice_type or "").strip().upper(),
+        (invoice_date or "").strip(),
+        (seller_gstin or "").strip().upper(),
+        (buyer_gstin or "").strip().upper(),
+    ]
 
-                item_number INTEGER NOT NULL,
-
-                material_name TEXT,
-                hsn TEXT,
-
-                quantity REAL,
-                unit TEXT,
-
-                rate REAL,
-                taxable_value REAL,
-
-                FOREIGN KEY (
-                    invoice_id
-                )
-                REFERENCES invoices(id)
-                ON DELETE CASCADE,
-
-                UNIQUE (
-                    invoice_id,
-                    item_number
-                )
-            );
+    return "|".join(values)
 
 
-            CREATE TABLE IF NOT EXISTS taxes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+def _document_id(
+    invoice_number: str,
+    invoice_type: str,
+    invoice_date: str | None,
+    seller_gstin: str | None,
+    buyer_gstin: str | None,
+) -> str:
+    """Create a deterministic Firestore document ID."""
+    identity = _identity_string(
+        invoice_number,
+        invoice_type,
+        invoice_date,
+        seller_gstin,
+        buyer_gstin,
+    )
 
-                invoice_id INTEGER NOT NULL,
-
-                tax_type TEXT NOT NULL,
-
-                rate REAL,
-                amount REAL,
-
-                FOREIGN KEY (
-                    invoice_id
-                )
-                REFERENCES invoices(id)
-                ON DELETE CASCADE
-            );
-
-
-            CREATE INDEX IF NOT EXISTS
-                idx_invoices_invoice_number
-            ON invoices(invoice_number);
+    return hashlib.sha256(
+        identity.encode("utf-8")
+    ).hexdigest()
 
 
-            CREATE INDEX IF NOT EXISTS
-                idx_invoices_seller_gstin
-            ON invoices(seller_gstin);
+def get_invoice_document_id(invoice: Invoice) -> str:
+    """Return the Firestore document ID for an Invoice."""
+    return _document_id(
+        invoice.invoice_number,
+        invoice.invoice_type,
+        invoice.invoice_date,
+        invoice.seller_gstin,
+        invoice.buyer_gstin,
+    )
 
 
-            CREATE INDEX IF NOT EXISTS
-                idx_items_invoice_id
-            ON items(invoice_id);
+# ============================================================
+# SERIALIZATION
+# ============================================================
+
+def _item_to_dict(
+    item: Any,
+    invoice_id: str,
+    item_number: int,
+) -> dict[str, Any]:
+    return {
+        "id": f"{invoice_id}_item_{item_number}",
+        "invoice_id": invoice_id,
+        "item_number": item_number,
+        "material_name": item.material_name,
+        "hsn": item.hsn,
+        "quantity": item.quantity,
+        "unit": item.unit,
+        "rate": item.rate,
+        "taxable_value": item.taxable_value,
+    }
 
 
-            CREATE INDEX IF NOT EXISTS
-                idx_taxes_invoice_id
-            ON taxes(invoice_id);
-            """
-        )
+def _tax_to_dict(
+    tax: Any,
+    invoice_id: str,
+    tax_number: int,
+) -> dict[str, Any]:
+    return {
+        "id": f"{invoice_id}_tax_{tax_number}",
+        "invoice_id": invoice_id,
+        "tax_type": tax.type,
+        "rate": tax.rate,
+        "amount": tax.amount,
+    }
+
+
+def _invoice_to_dict(
+    invoice: Invoice,
+    invoice_id: str,
+    validation_status: str | None,
+) -> dict[str, Any]:
+    """
+    Convert the Invoice dataclass into one Firestore document.
+    """
+    return {
+        "id": invoice_id,
+        "invoice_number": invoice.invoice_number,
+        "invoice_type": invoice.invoice_type,
+        "invoice_date": invoice.invoice_date,
+        "due_date": invoice.due_date,
+        "seller": invoice.seller,
+        "seller_gstin": invoice.seller_gstin,
+        "buyer": invoice.buyer,
+        "buyer_gstin": invoice.buyer_gstin,
+        "total_tax": float(invoice.total_tax or 0),
+        "round_off": float(invoice.round_off or 0),
+        "total_amount": float(invoice.total_amount or 0),
+        "received_amount": float(invoice.received_amount or 0),
+        "source_file": str(invoice.source_file),
+        "source_filename": str(invoice.source_filename),
+        "source_filename": str(invoice.source_filename),
+        "validation_status": validation_status,
+        "items": [
+            _item_to_dict(
+                item,
+                invoice_id,
+                item_number,
+            )
+            for item_number, item in enumerate(
+                invoice.items,
+                start=1,
+            )
+        ],
+        "taxes": [
+            _tax_to_dict(
+                tax,
+                invoice_id,
+                tax_number,
+            )
+            for tax_number, tax in enumerate(
+                invoice.taxes,
+                start=1,
+            )
+        ],
+    }
+
+
+def _snapshot_to_dict(snapshot) -> dict[str, Any]:
+    """Convert a Firestore document snapshot into a normal dict."""
+    data = snapshot.to_dict() or {}
+    data.setdefault("id", snapshot.id)
+    return data
 
 
 # ============================================================
 # INSERT INVOICE
 # ============================================================
 
-
 def insert_invoice(
     invoice: Invoice,
     database_path: str | Path = DEFAULT_DATABASE,
-) -> int:
+) -> str:
     """
-    Insert an Invoice and all associated items and taxes.
+    Insert an Invoice and all associated items/taxes.
 
     Returns:
-        Database ID of the invoice.
+        Firestore document ID.
 
     Raises:
-        sqlite3.IntegrityError if the invoice already exists
-        according to the seller GSTIN + invoice number constraint.
-
-    The entire operation is transactional.
+        ValueError if the exact invoice already exists.
     """
-
-    with get_connection(
-        database_path
-    ) as connection:
-
-        cursor = connection.execute(
-            """
-            INSERT INTO invoices (
-                invoice_number,
-                invoice_type,
-                invoice_date,
-                due_date,
-                seller,
-                seller_gstin,
-                buyer,
-                buyer_gstin,
-                total_tax,
-                round_off,
-                total_amount,
-                received_amount,
-                source_file,
-                validation_status
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
-            )
-            """,
-            (
-                invoice.invoice_number,
-                invoice.invoice_type,
-                invoice.invoice_date,
-                invoice.due_date,
-                invoice.seller,
-                invoice.seller_gstin,
-                invoice.buyer,
-                invoice.buyer_gstin,
-                invoice.total_tax,
-                invoice.round_off,
-                invoice.total_amount,
-                invoice.received_amount,
-                str(invoice.source_file),
-                None,
-            ),
-        )
-
-        invoice_id = cursor.lastrowid
-
-        # ----------------------------------------------------
-        # Items
-        # ----------------------------------------------------
-
-        for item_number, item in enumerate(
-            invoice.items,
-            start=1,
-        ):
-
-            connection.execute(
-                """
-                INSERT INTO items (
-                    invoice_id,
-                    item_number,
-                    material_name,
-                    hsn,
-                    quantity,
-                    unit,
-                    rate,
-                    taxable_value
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    invoice_id,
-                    item_number,
-                    item.material_name,
-                    item.hsn,
-                    item.quantity,
-                    item.unit,
-                    item.rate,
-                    item.taxable_value,
-                ),
-            )
-
-        # ----------------------------------------------------
-        # Taxes
-        # ----------------------------------------------------
-
-        for tax in invoice.taxes:
-
-            connection.execute(
-                """
-                INSERT INTO taxes (
-                    invoice_id,
-                    tax_type,
-                    rate,
-                    amount
-                )
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    invoice_id,
-                    tax.type,
-                    tax.rate,
-                    tax.amount,
-                ),
-            )
-
-        return int(invoice_id)
+    return insert_validated_invoice(
+        invoice,
+        validation_status=None,
+        database_path=database_path,
+    )
 
 
 # ============================================================
 # INSERT WITH VALIDATION STATUS
 # ============================================================
 
-
 def insert_validated_invoice(
     invoice: Invoice,
     validation_status: str,
     database_path: str | Path = DEFAULT_DATABASE,
-) -> int:
+) -> str:
     """
-    Insert an invoice while explicitly storing its
-    validation status.
+    Insert an invoice while storing its validation status.
 
-    Expected statuses include:
-
-        VALID
-        WARNING
-        INVALID
+    Firestore's create() operation fails if the document already exists,
+    so duplicate protection is enforced at the database write itself.
     """
+    client = get_firestore_client()
 
-    with get_connection(
-        database_path
-    ) as connection:
+    invoice_id = get_invoice_document_id(invoice)
 
-        cursor = connection.execute(
-            """
-            INSERT INTO invoices (
-                invoice_number,
-                invoice_type,
-                invoice_date,
-                due_date,
-                seller,
-                seller_gstin,
-                buyer,
-                buyer_gstin,
-                total_tax,
-                round_off,
-                total_amount,
-                received_amount,
-                source_file,
-                validation_status
-            )
-            VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?, ?
-            )
-            """,
-            (
-                invoice.invoice_number,
-                invoice.invoice_type,
-                invoice.invoice_date,
-                invoice.due_date,
-                invoice.seller,
-                invoice.seller_gstin,
-                invoice.buyer,
-                invoice.buyer_gstin,
-                invoice.total_tax,
-                invoice.round_off,
-                invoice.total_amount,
-                invoice.received_amount,
-                str(invoice.source_file),
-                validation_status,
-            ),
-        )
+    document = _invoice_to_dict(
+        invoice,
+        invoice_id,
+        validation_status,
+    )
 
-        invoice_id = cursor.lastrowid
+    reference = (
+        client.collection(FIRESTORE_COLLECTION)
+        .document(invoice_id)
+    )
 
-        for item_number, item in enumerate(
-            invoice.items,
-            start=1,
-        ):
+    try:
+        reference.create(document)
+    except AlreadyExists as exc:
+        raise ValueError(
+            "Invoice already exists in Firestore."
+        ) from exc
 
-            connection.execute(
-                """
-                INSERT INTO items (
-                    invoice_id,
-                    item_number,
-                    material_name,
-                    hsn,
-                    quantity,
-                    unit,
-                    rate,
-                    taxable_value
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    invoice_id,
-                    item_number,
-                    item.material_name,
-                    item.hsn,
-                    item.quantity,
-                    item.unit,
-                    item.rate,
-                    item.taxable_value,
-                ),
-            )
-
-        for tax in invoice.taxes:
-
-            connection.execute(
-                """
-                INSERT INTO taxes (
-                    invoice_id,
-                    tax_type,
-                    rate,
-                    amount
-                )
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    invoice_id,
-                    tax.type,
-                    tax.rate,
-                    tax.amount,
-                ),
-            )
-
-        return int(invoice_id)
+    return invoice_id
 
 
 # ============================================================
 # CHECK DUPLICATE
 # ============================================================
-
 
 def invoice_exists(
     invoice_number: str,
@@ -477,188 +350,188 @@ def invoice_exists(
         + invoice date
         + seller GSTIN
         + buyer GSTIN
-
-    This allows the same invoice number to appear on
-    different dates or transactions.
     """
+    client = get_firestore_client()
 
-    with get_connection(
-        database_path
-    ) as connection:
+    invoice_id = _document_id(
+        invoice_number,
+        invoice_type,
+        invoice_date,
+        seller_gstin,
+        buyer_gstin,
+    )
 
-        row = connection.execute(
-            """
-            SELECT 1
-            FROM invoices
-            WHERE invoice_number = ?
-              AND invoice_type = ?
-              AND invoice_date = ?
-              AND seller_gstin IS ?
-              AND buyer_gstin IS ?
-            LIMIT 1
-            """,
-            (
-                invoice_number,
-                invoice_type,
-                invoice_date,
-                seller_gstin,
-                buyer_gstin,
-            ),
-        ).fetchone()
+    snapshot = (
+        client.collection(FIRESTORE_COLLECTION)
+        .document(invoice_id)
+        .get()
+    )
 
-    return row is not None
+    return snapshot.exists
 
 
 # ============================================================
 # FETCH INVOICES
 # ============================================================
 
-
 def get_all_invoices(
     database_path: str | Path = DEFAULT_DATABASE,
-) -> list[sqlite3.Row]:
+) -> list[dict[str, Any]]:
     """
     Return all stored invoices.
+
+    Results are dictionaries rather than sqlite3.Row objects.
+    Existing InvoiceIQ code can continue using invoice["field"] access.
     """
+    client = get_firestore_client()
 
-    with get_connection(
-        database_path
-    ) as connection:
+    rows = [
+        _snapshot_to_dict(snapshot)
+        for snapshot in (
+            client.collection(FIRESTORE_COLLECTION).stream()
+        )
+    ]
 
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM invoices
-            ORDER BY id
-            """
-        ).fetchall()
+    rows.sort(
+        key=lambda row: (
+            row.get("invoice_date") or "",
+            row.get("id") or "",
+        )
+    )
 
     return rows
+
+
+# ============================================================
+# FETCH SINGLE INVOICE
+# ============================================================
+
+def get_invoice_by_id(
+    invoice_id: str,
+    database_path: str | Path = DEFAULT_DATABASE,
+) -> dict[str, Any] | None:
+    """Return one invoice document by Firestore document ID."""
+    client = get_firestore_client()
+
+    snapshot = (
+        client.collection(FIRESTORE_COLLECTION)
+        .document(str(invoice_id))
+        .get()
+    )
+
+    if not snapshot.exists:
+        return None
+
+    return _snapshot_to_dict(snapshot)
 
 
 # ============================================================
 # FETCH ITEMS
 # ============================================================
 
-
 def get_invoice_items(
-    invoice_id: int,
+    invoice_id: str,
     database_path: str | Path = DEFAULT_DATABASE,
-) -> list[sqlite3.Row]:
+) -> list[dict[str, Any]]:
     """
     Return all items belonging to an invoice.
+
+    Items are embedded inside the invoice document in Firestore.
     """
+    invoice = get_invoice_by_id(
+        invoice_id,
+        database_path,
+    )
 
-    with get_connection(
-        database_path
-    ) as connection:
+    if invoice is None:
+        return []
 
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM items
-            WHERE invoice_id = ?
-            ORDER BY item_number
-            """,
-            (invoice_id,),
-        ).fetchall()
+    items = invoice.get("items") or []
 
-    return rows
+    return sorted(
+        items,
+        key=lambda item: int(
+            item.get("item_number", 0)
+        ),
+    )
 
 
 # ============================================================
 # FETCH TAXES
 # ============================================================
 
-
 def get_invoice_taxes(
-    invoice_id: int,
+    invoice_id: str,
     database_path: str | Path = DEFAULT_DATABASE,
-) -> list[sqlite3.Row]:
+) -> list[dict[str, Any]]:
     """
     Return all taxes belonging to an invoice.
+
+    Taxes are embedded inside the invoice document in Firestore.
     """
+    invoice = get_invoice_by_id(
+        invoice_id,
+        database_path,
+    )
 
-    with get_connection(
-        database_path
-    ) as connection:
+    if invoice is None:
+        return []
 
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM taxes
-            WHERE invoice_id = ?
-            ORDER BY id
-            """,
-            (invoice_id,),
-        ).fetchall()
-
-    return rows
+    return invoice.get("taxes") or []
 
 
 # ============================================================
 # DELETE INVOICE
 # ============================================================
 
-
 def delete_invoice(
-    invoice_id: int,
+    invoice_id: str,
     database_path: str | Path = DEFAULT_DATABASE,
 ) -> bool:
     """
     Delete an invoice.
 
-    Associated items and taxes are automatically deleted
-    through ON DELETE CASCADE.
-
-    Returns True if an invoice was deleted.
+    Items and taxes are embedded in the invoice document, so deleting
+    the document deletes them automatically.
     """
+    client = get_firestore_client()
 
-    with get_connection(
-        database_path
-    ) as connection:
+    reference = (
+        client.collection(FIRESTORE_COLLECTION)
+        .document(str(invoice_id))
+    )
 
-        cursor = connection.execute(
-            """
-            DELETE FROM invoices
-            WHERE id = ?
-            """,
-            (invoice_id,),
-        )
+    snapshot = reference.get()
 
-    return cursor.rowcount > 0
+    if not snapshot.exists:
+        return False
+
+    reference.delete()
+    return True
 
 
 # ============================================================
 # DATABASE SUMMARY
 # ============================================================
 
-
 def get_database_summary(
     database_path: str | Path = DEFAULT_DATABASE,
 ) -> dict[str, int]:
-    """
-    Return basic database statistics.
-    """
+    """Return basic Firestore statistics."""
+    invoices = get_all_invoices(database_path)
 
-    with get_connection(
-        database_path
-    ) as connection:
+    item_count = sum(
+        len(invoice.get("items") or [])
+        for invoice in invoices
+    )
 
-        invoice_count = connection.execute(
-            "SELECT COUNT(*) FROM invoices"
-        ).fetchone()[0]
-
-        item_count = connection.execute(
-            "SELECT COUNT(*) FROM items"
-        ).fetchone()[0]
-
-        tax_count = connection.execute(
-            "SELECT COUNT(*) FROM taxes"
-        ).fetchone()[0]
+    tax_count = sum(
+        len(invoice.get("taxes") or [])
+        for invoice in invoices
+    )
 
     return {
-        "invoices": invoice_count,
+        "invoices": len(invoices),
         "items": item_count,
         "taxes": tax_count,
     }
@@ -668,31 +541,14 @@ def get_database_summary(
 # COMMAND LINE TEST
 # ============================================================
 
-
 if __name__ == "__main__":
-
     initialize_database()
 
-    print(
-        "✅ InvoiceIQ database initialized."
-    )
-
-    print(
-        f"Database: {DEFAULT_DATABASE}"
-    )
+    print("✅ InvoiceIQ Firestore connection initialized.")
 
     summary = get_database_summary()
 
-    print("\nDatabase summary:")
-
-    print(
-        f"  Invoices: {summary['invoices']}"
-    )
-
-    print(
-        f"  Items:    {summary['items']}"
-    )
-
-    print(
-        f"  Taxes:    {summary['taxes']}"
-    )
+    print("\nFirestore summary:")
+    print(f"  Invoices: {summary['invoices']}")
+    print(f"  Items:    {summary['items']}")
+    print(f"  Taxes:    {summary['taxes']}")

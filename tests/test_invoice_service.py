@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from database.db import initialize_database
-from database.queries import get_invoice_by_id
 from extraction.invoice_extractor import extract_invoice
 from services.invoice_service import process_invoice
 
@@ -15,14 +13,31 @@ PURCHASE_03 = (
 )
 
 
-def test_process_invoice_success(tmp_path):
-    database = tmp_path / "test.db"
+def test_process_invoice_success(monkeypatch):
+    captured_invoice = {}
 
-    initialize_database(database)
+    def mock_insert_validated_invoice(
+        invoice,
+        validation_status,
+        database_path,
+    ):
+        captured_invoice["invoice"] = invoice
+        captured_invoice["validation_status"] = validation_status
+        return "test-invoice-id"
+
+    monkeypatch.setattr(
+        "services.invoice_service.insert_validated_invoice",
+        mock_insert_validated_invoice,
+    )
+
+    monkeypatch.setattr(
+        "services.invoice_service.invoice_exists",
+        lambda **kwargs: False,
+    )
 
     result = process_invoice(
         PURCHASE_03,
-        database,
+        source_filename="Purchase Invoice 03.pdf",
     )
 
     assert result["success"] is True
@@ -31,71 +46,71 @@ def test_process_invoice_success(tmp_path):
         "KGSDF/YGEPL/26-27/03"
     )
     assert result["validation_status"] == "VALID"
+    assert result["invoice_id"] == "test-invoice-id"
 
-    invoice_id = result["invoice_id"]
+    invoice = captured_invoice["invoice"]
 
-    invoice = get_invoice_by_id(
-        invoice_id,
-        database,
-    )
-
-    assert invoice is not None
-
-    assert invoice["invoice_number"] == (
+    assert invoice.invoice_number == (
         "KGSDF/YGEPL/26-27/03"
     )
-
-    assert invoice["total_amount"] == 158132.0
-
-
-def test_process_invoice_duplicate(tmp_path):
-    database = tmp_path / "test.db"
-
-    initialize_database(database)
-
-    first_result = process_invoice(
-        PURCHASE_03,
-        database,
+    assert invoice.total_amount == 158132.0
+    assert invoice.source_filename == (
+        "Purchase Invoice 03.pdf"
     )
 
-    assert first_result["success"] is True
+    assert captured_invoice["validation_status"] == "VALID"
 
-    second_result = process_invoice(
-        PURCHASE_03,
-        database,
+
+def test_process_invoice_duplicate(monkeypatch):
+    existing_invoice_id = "existing-invoice-id"
+
+    monkeypatch.setattr(
+        "services.invoice_service.invoice_exists",
+        lambda **kwargs: True,
     )
 
-    assert second_result["success"] is False
-    assert second_result["status"] == "DUPLICATE"
+    monkeypatch.setattr(
+        "services.invoice_service.get_all_invoices",
+        lambda database_path: [
+            {
+                "id": existing_invoice_id,
+                "invoice_number": "KGSDF/YGEPL/26-27/03",
+                "invoice_type": "PURCHASE",
+                "invoice_date": "24/08/2026",
+                "seller_gstin": "09AAKCK2797D1Z6",
+                "buyer_gstin": "09AABCY6613M1ZV",
+            }
+        ],
+    )
 
-    assert second_result["invoice_number"] == (
+    result = process_invoice(
+        PURCHASE_03,
+        source_filename="Purchase Invoice 03.pdf",
+    )
+
+    assert result["success"] is False
+    assert result["status"] == "DUPLICATE"
+    assert result["invoice_number"] == (
         "KGSDF/YGEPL/26-27/03"
     )
-
-    assert (
-        second_result["existing_invoice_id"]
-        == first_result["invoice_id"]
+    assert result["existing_invoice_id"] == (
+        existing_invoice_id
     )
 
 
-def test_process_invoice_validation_failure(
-    tmp_path,
-    monkeypatch,
-):
-    database = tmp_path / "test.db"
-
-    initialize_database(database)
-
+def test_process_invoice_validation_failure(monkeypatch):
     invoice = extract_invoice(
-        PURCHASE_03
+        PURCHASE_03,
+        source_filename="Purchase Invoice 03.pdf",
     )
 
     # Make the extracted invoice invalid.
-    # Quantity × rate will no longer match
-    # the extracted taxable value.
     invoice.items[0].quantity = 999999.0
 
-    def mock_extract_invoice(pdf_path):
+    def mock_extract_invoice(
+        pdf_path,
+        source_filename=None,
+    ):
         return invoice
 
     monkeypatch.setattr(
@@ -105,18 +120,13 @@ def test_process_invoice_validation_failure(
 
     result = process_invoice(
         PURCHASE_03,
-        database,
+        source_filename="Purchase Invoice 03.pdf",
     )
 
     assert result["success"] is False
-    assert result["status"] == (
-        "VALIDATION_FAILED"
-    )
-
+    assert result["status"] == "VALIDATION_FAILED"
     assert result["invoice_number"] == (
         "KGSDF/YGEPL/26-27/03"
     )
-
     assert len(result["errors"]) > 0
-
     assert result["warnings"] == []

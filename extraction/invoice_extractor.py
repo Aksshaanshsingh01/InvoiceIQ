@@ -138,7 +138,7 @@ class Invoice:
     # --------------------------------------------------------
 
     source_file: str
-
+    source_filename: str
 
 # ============================================================
 # PDF TEXT EXTRACTION
@@ -719,6 +719,7 @@ def convert_taxes(
 
 def extract_invoice(
     pdf_path: str | Path,
+    source_filename: str | None = None,
 ) -> Invoice:
     """
     Main InvoiceIQ extraction pipeline.
@@ -931,10 +932,15 @@ def extract_invoice(
         ),
 
         source_file=str(
-            pdf_path
-        ),
-    )
+    pdf_path
+    ),
 
+    source_filename=(
+        source_filename
+        if source_filename
+        else pdf_path.name
+    ),
+)
 
 # ============================================================
 # SERIALIZATION
@@ -986,4 +992,4 @@ if __name__ == "__main__":
             indent=2,
             ensure_ascii=False,
         )
-    ) 
+    )

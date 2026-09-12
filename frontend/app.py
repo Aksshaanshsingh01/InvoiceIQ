@@ -9,6 +9,10 @@ from frontend.api_client import (
     upload_invoice,
 )
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ============================================================
 # HELPERS
@@ -1157,7 +1161,7 @@ def invoices_page():
 # ============================================================
 
 @ui.page("/invoices/{invoice_id}")
-def invoice_detail_page(invoice_id: int):
+def invoice_detail_page(invoice_id: str):
 
     header()
 
@@ -1936,7 +1940,7 @@ def upload_page():
                 "4. Invoice totals are calculated",
                 "5. Validation rules are applied",
                 "6. Duplicate invoices are detected",
-                "7. Valid invoices are stored in SQLite",
+                "7. Valid invoices are stored in Firestore",
                 "8. Analytics are automatically updated",
             ]
 
@@ -1955,5 +1959,11 @@ def upload_page():
 
 ui.run(
     title="InvoiceIQ",
-    port=8080,
+    host="0.0.0.0",
+    port=int(
+        os.getenv(
+            "PORT",
+            os.getenv("INVOICEIQ_FRONTEND_PORT", "8080"),
+        )
+    ),
 )

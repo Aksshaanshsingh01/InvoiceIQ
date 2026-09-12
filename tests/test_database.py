@@ -2,13 +2,13 @@
 Tests for the InvoiceIQ SQLite database layer.
 """
 
-import sqlite3
+import pytest
 
 from extraction.invoice_extractor import (
     extract_invoice,
 )
 
-from database.db import (
+from database.db import(
     initialize_database,
     insert_validated_invoice,
     invoice_exists,
@@ -75,7 +75,8 @@ def test_insert_multi_item_invoice(
         database,
     )
 
-    assert invoice_id > 0
+    assert isinstance(invoice_id, str)
+    assert invoice_id
 
     # --------------------------------------------------------
     # Invoice
@@ -205,7 +206,10 @@ def test_duplicate_invoice_protection(
 
     assert invoice_exists(
         invoice.invoice_number,
+        invoice.invoice_type,
+        invoice.invoice_date,
         invoice.seller_gstin,
+        invoice.buyer_gstin,
         database,
     )
 
@@ -213,22 +217,14 @@ def test_duplicate_invoice_protection(
     # Duplicate insert should fail
     # --------------------------------------------------------
 
-    try:
-
+    with pytest.raises(
+        ValueError,
+        match="already exists",
+    ):
         insert_validated_invoice(
             invoice,
             "VALID",
             database,
-        )
-
-    except sqlite3.IntegrityError:
-
-        pass
-
-    else:
-
-        raise AssertionError(
-            "Duplicate invoice was inserted."
         )
 
 

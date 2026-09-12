@@ -24,6 +24,7 @@ class InvoiceProcessingError(Exception):
 def process_invoice(
     pdf_path: str | Path,
     database_path: str | Path = DEFAULT_DATABASE,
+    source_filename: str | None = None,
 ) -> dict:
     pdf_path = Path(pdf_path)
 
@@ -31,7 +32,10 @@ def process_invoice(
     # 1. Extract invoice
     # --------------------------------------------------------
     try:
-        invoice = extract_invoice(pdf_path)
+        invoice = extract_invoice(
+            pdf_path,
+            source_filename=source_filename,
+        )
 
     except Exception as exc:
         # Extraction/parsing failures are bad input,
