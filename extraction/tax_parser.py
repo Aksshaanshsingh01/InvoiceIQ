@@ -351,7 +351,9 @@ def parse_sale_tax_summary(
     """
     Parse Sale invoice tax summary.
 
-    Expected structure:
+    Supports both:
+
+    1. IGST sale layout
 
         HSN/SAC
         Taxable Value
@@ -365,6 +367,26 @@ def parse_sale_tax_summary(
         5%
         3,712.5
         ₹ 3,712.5
+
+    2. CGST + SGST sale layout
+
+        HSN/SAC
+        Taxable Value
+        CGST
+        Rate
+        Amount
+        SGST
+        Rate
+        Amount
+        Total Tax Amount
+
+        44013100
+        1,81,955
+        2.5%
+        4,548.88
+        2.5%
+        4,548.88
+        ₹ 9,097.75
     """
 
     lines = [
@@ -378,6 +400,8 @@ def parse_sale_tax_summary(
             "Sale tax summary is empty."
         )
 
+
+
     # --------------------------------------------------------
     # Locate "Total Tax Amount"
     # --------------------------------------------------------
@@ -385,12 +409,7 @@ def parse_sale_tax_summary(
     total_tax_label_index = None
 
     for index, line in enumerate(lines):
-
-        if (
-            line.lower()
-            == "total tax amount"
-        ):
-
+        if line.lower() == "total tax amount":
             total_tax_label_index = index
             break
 
@@ -401,15 +420,46 @@ def parse_sale_tax_summary(
         )
 
     # --------------------------------------------------------
-    # Values occur after the headers.
+    # Identify tax columns from the header
     #
-    # Current structure:
+    # The tax types appear BEFORE "Total Tax Amount".
+    # This prevents us from assuming that every sale uses IGST.
+    # --------------------------------------------------------
+
+    header_lines = lines[:total_tax_label_index]
+
+    tax_types: list[str] = []
+
+    for line in header_lines:
+        match = re.fullmatch(
+            r"(CGST|SGST|IGST)",
+            line,
+            flags=re.IGNORECASE,
+        )
+
+        if match:
+            tax_type = match.group(1).upper()
+
+            if tax_type not in tax_types:
+                tax_types.append(tax_type)
+
+    if not tax_types:
+        raise ValueError(
+            "Sale tax type not found."
+        )
+
+    # --------------------------------------------------------
+    # Values occur after "Total Tax Amount"
+    #
+    # Example:
     #
     # 44013100
-    # 74,250
-    # 5%
-    # 3,712.5
-    # ₹ 3,712.5
+    # 1,81,955
+    # 2.5%
+    # 4,548.88
+    # 2.5%
+    # 4,548.88
+    # ₹ 9,097.75
     # --------------------------------------------------------
 
     value_lines = lines[
@@ -428,15 +478,11 @@ def parse_sale_tax_summary(
 
     hsn_index = None
 
-    for index, line in enumerate(
-        value_lines
-    ):
-
+    for index, line in enumerate(value_lines):
         if re.fullmatch(
             r"\d{6,8}",
             line,
         ):
-
             hsn_index = index
             break
 
@@ -452,16 +498,9 @@ def parse_sale_tax_summary(
 
     taxable_value = None
 
-    for line in value_lines[
-        hsn_index + 1:
-    ]:
-
+    for line in value_lines[hsn_index + 1:]:
         if is_money(line):
-
-            taxable_value = parse_money(
-                line
-            )
-
+            taxable_value = parse_money(line)
             break
 
     if taxable_value is None:
@@ -471,92 +510,100 @@ def parse_sale_tax_summary(
         )
 
     # --------------------------------------------------------
-    # Tax rate
+    # Extract all tax rates and amounts
+    #
+    # We intentionally collect the percentage/money pairs
+    # instead of assuming there is only one tax.
     # --------------------------------------------------------
 
-    rate_index = None
-    tax_rate = None
+    tax_values = value_lines[hsn_index + 1:]
 
-    for index, line in enumerate(
-        value_lines[
-            hsn_index + 1:
-        ],
-        start=hsn_index + 1,
-    ):
+    tax_pairs: list[tuple[float, float]] = []
+
+    index = 0
+
+    while index < len(tax_values):
+        line = tax_values[index]
 
         if is_percentage(line):
+            tax_rate = parse_percentage(line)
 
-            tax_rate = parse_percentage(
-                line
-            )
+            tax_amount = None
 
-            rate_index = index
+            for candidate in tax_values[index + 1:]:
+                if is_money(candidate):
+                    tax_amount = parse_money(candidate)
+                    break
 
-            break
+                # Stop if another percentage appears before
+                # finding an amount.
+                if is_percentage(candidate):
+                    break
 
-    if tax_rate is None:
+            if tax_amount is not None:
+                tax_pairs.append(
+                    (tax_rate, tax_amount)
+                )
+
+        index += 1
+
+    if not tax_pairs:
         raise ValueError(
-            "Sale tax rate not found."
+            "Sale tax rate/amount "
+            "not found."
         )
 
     # --------------------------------------------------------
-    # Tax amount
+    # Match tax types to tax pairs
     # --------------------------------------------------------
 
-    tax_amount = None
-
-    for line in value_lines[
-        rate_index + 1:
-    ]:
-
-        if is_money(line):
-
-            tax_amount = parse_money(
-                line
-            )
-
-            break
-
-    if tax_amount is None:
+    if len(tax_pairs) < len(tax_types):
         raise ValueError(
-            "Sale tax amount not found."
+            "Sale tax summary contains "
+            f"{len(tax_types)} tax types but only "
+            f"{len(tax_pairs)} tax values."
+        )
+
+    taxes: list[ParsedTax] = []
+
+    for tax_type, (tax_rate, tax_amount) in zip(
+        tax_types,
+        tax_pairs,
+    ):
+        taxes.append(
+            ParsedTax(
+                type=tax_type,
+                rate=tax_rate,
+                amount=tax_amount,
+            )
         )
 
     # --------------------------------------------------------
-    # Current Sale layout uses IGST.
-    #
-    # Later we can expand this to support CGST/SGST
-    # Sale invoices as well.
+    # Total tax
     # --------------------------------------------------------
 
-    tax = ParsedTax(
-        type="IGST",
-        rate=tax_rate,
-        amount=tax_amount,
+    total_tax = round(
+        sum(
+            tax.amount
+            for tax in taxes
+        ),
+        2,
     )
 
     return ParsedTaxSummary(
         taxable_value=taxable_value,
-        taxes=[tax],
-        total_tax=round(
-            tax_amount,
-            2,
-        ),
+        taxes=taxes,
+        total_tax=total_tax,
     )
 
-
-# ============================================================
+    # ============================================================
 # MAIN TAX PARSER
 # ============================================================
-
 
 def parse_tax_summary(
     section: TableSection,
     invoice_type: str,
 ) -> ParsedTaxSummary:
-    """
-    Parse a tax summary according to invoice type.
-    """
 
     invoice_type = (
         invoice_type
@@ -565,13 +612,11 @@ def parse_tax_summary(
     )
 
     if invoice_type == "PURCHASE":
-
         return parse_purchase_tax_summary(
             section
         )
 
     if invoice_type == "SALE":
-
         return parse_sale_tax_summary(
             section
         )
@@ -580,148 +625,3 @@ def parse_tax_summary(
         f"Unsupported invoice type: "
         f"{invoice_type}"
     )
-
-
-# ============================================================
-# DEBUG DISPLAY
-# ============================================================
-
-
-def print_tax_summary(
-    summary: ParsedTaxSummary,
-) -> None:
-    """
-    Print a parsed tax summary.
-    """
-
-    print("\n")
-    print("=" * 80)
-    print("PARSED TAX SUMMARY")
-    print("=" * 80)
-
-    print(
-        f"Taxable Value : "
-        f"₹{summary.taxable_value:.2f}"
-    )
-
-    print(
-        f"Total Tax     : "
-        f"₹{summary.total_tax:.2f}"
-    )
-
-    print(
-        "\nTaxes:"
-    )
-
-    for index, tax in enumerate(
-        summary.taxes,
-        start=1,
-    ):
-
-        print(
-            f"  Tax {index}"
-        )
-
-        print(
-            f"    Type   : "
-            f"{tax.type}"
-        )
-
-        print(
-            f"    Rate   : "
-            f"{tax.rate}%"
-        )
-
-        print(
-            f"    Amount : "
-            f"₹{tax.amount:.2f}"
-        )
-
-    print("=" * 80)
-
-
-# ============================================================
-# STANDALONE DEBUGGER
-# ============================================================
-
-
-if __name__ == "__main__":
-
-    project_root = (
-        Path(__file__)
-        .resolve()
-        .parent
-        .parent
-    )
-
-    sample_files = [
-        (
-            project_root
-            / "samples"
-            / "Purchase Invoice 4.pdf"
-        ),
-        (
-            project_root
-            / "samples"
-            / "Sale Invoice 4.pdf"
-        ),
-    ]
-
-    for pdf_file in sample_files:
-
-        print("\n")
-        print("#" * 80)
-        print(
-            f"FILE: {pdf_file.name}"
-        )
-        print("#" * 80)
-
-        try:
-
-            sections = parse_sections(
-                pdf_file
-            )
-
-            # ------------------------------------------------
-            # Determine layout from item-table header.
-            # ------------------------------------------------
-
-            first_line = (
-                sections
-                .item_table
-                .lines[0]
-                .strip()
-                .upper()
-            )
-
-            if first_line == "S.NO.":
-
-                invoice_type = "SALE"
-
-            else:
-
-                invoice_type = "PURCHASE"
-
-            # ------------------------------------------------
-            # Parse tax summary.
-            # ------------------------------------------------
-
-            summary = parse_tax_summary(
-                sections.tax_summary,
-                invoice_type,
-            )
-
-            print_tax_summary(
-                summary
-            )
-
-        except Exception as error:
-
-            print(
-                f"\n❌ Failed to parse "
-                f"{pdf_file.name}"
-            )
-
-            print(
-                f"Reason: {error}"
-            )

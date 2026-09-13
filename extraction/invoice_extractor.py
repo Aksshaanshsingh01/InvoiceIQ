@@ -579,29 +579,127 @@ def extract_gstins(
 
 def detect_invoice_type(text: str) -> str:
     """
-    Detect invoice type.
+    Detect invoice type using document/layout signatures.
 
     Priority:
     1. Explicit SALE / PURCHASE label
-    2. IGST -> SALE
-    3. CGST + SGST -> PURCHASE
+    2. Sale-layout markers
+    3. Purchase-layout markers
+    4. GST-based fallback
     """
 
     upper = text.upper()
 
-    # Explicit invoice type
-    if re.search(r"\bSALE\b", upper):
+    # ========================================================
+    # 1. Explicit invoice type indicators
+    # ========================================================
+
+    if re.search(
+        r"\b(?:SALE|SALES)\s+INVOICE\b",
+        upper,
+    ):
         return "SALE"
 
-    if re.search(r"\bPURCHASE\b", upper):
+    if re.search(
+        r"\bPURCHASE\s+INVOICE\b",
+        upper,
+    ):
         return "PURCHASE"
 
-    # Tax-based fallback
+    if re.search(
+        r"\bINVOICE\s+TYPE\s*[:\-]?\s*SALE\b",
+        upper,
+    ):
+        return "SALE"
+
+    if re.search(
+        r"\bINVOICE\s+TYPE\s*[:\-]?\s*PURCHASE\b",
+        upper,
+    ):
+        return "PURCHASE"
+
+    # ========================================================
+    # 2. Sale-layout signature
+    #
+    # Current Sale invoices contain:
+    #   S.NO.
+    #   ITEMS
+    #   HSN
+    #   QTY.
+    #   RATE
+    #   TAX
+    #   AMOUNT
+    #   Round Off
+    #   TOTAL
+    #   RECEIVED AMOUNT
+    #   HSN/SAC
+    #
+    # HSN/SAC is particularly useful because the current
+    # Purchase layout does not use this tax-summary header.
+    # ========================================================
+
+    sale_markers = 0
+
+    if re.search(r"\bHSN/SAC\b", upper):
+        sale_markers += 2
+
+    if re.search(r"\bS\.NO\.\b", upper):
+        sale_markers += 1
+
+    if re.search(r"\bROUND OFF\b", upper):
+        sale_markers += 1
+
+    if re.search(r"\bRECEIVED AMOUNT\b", upper):
+        sale_markers += 1
+
+    if sale_markers >= 3:
+        return "SALE"
+
+    # ========================================================
+    # 3. Purchase-layout signature
+    #
+    # Current Purchase invoices contain:
+    #   Items
+    #   HSN No.
+    #   Qty.
+    #   Rate
+    #   Tax
+    #   Total
+    #   SUBTOTAL
+    #   Taxable Amount
+    #   Total Amount
+    # ========================================================
+
+    purchase_markers = 0
+
+    if re.search(r"\bSUBTOTAL\b", upper):
+        purchase_markers += 2
+
+    if re.search(r"\bTAXABLE AMOUNT\b", upper):
+        purchase_markers += 2
+
+    if re.search(r"\bHSN NO\.\b", upper):
+        purchase_markers += 1
+
+    if re.search(r"\bTOTAL AMOUNT\b", upper):
+        purchase_markers += 1
+
+    if purchase_markers >= 3:
+        return "PURCHASE"
+
+    # ========================================================
+    # 4. GST fallback
+    #
+    # IGST is still a useful fallback for the current Sale
+    # layouts.
+    #
+    # CGST + SGST alone MUST NOT imply PURCHASE because
+    # sales invoices can also be intra-state and therefore
+    # use CGST + SGST.
+    # ========================================================
+
     if "IGST" in upper:
         return "SALE"
-
-    if "CGST" in upper and "SGST" in upper:
-        return "PURCHASE"
 
     return "UNKNOWN"
 

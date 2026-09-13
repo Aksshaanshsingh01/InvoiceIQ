@@ -35,7 +35,7 @@ def test_discover_pdfs():
         SAMPLES_DIR
     )
 
-    assert len(pdfs) == 4
+    assert len(pdfs) == 5
 
     assert all(
         pdf.suffix.lower() == ".pdf"
@@ -58,9 +58,9 @@ def test_process_directory():
     # File counts
     # --------------------------------------------------------
 
-    assert result.total_files == 4
+    assert result.total_files == 5
 
-    assert result.successful_files == 4
+    assert result.successful_files == 5
 
     assert result.failed_files == 0
 
@@ -68,7 +68,7 @@ def test_process_directory():
     # Invoices
     # --------------------------------------------------------
 
-    assert len(result.invoices) == 4
+    assert len(result.invoices) == 5
 
     # --------------------------------------------------------
     # Duplicate detection
