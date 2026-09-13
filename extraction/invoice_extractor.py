@@ -100,7 +100,7 @@ class Invoice:
     invoice_type: str
     invoice_number: str
     invoice_date: str
-    due_date: str
+    due_date: Optional[str]
 
     # --------------------------------------------------------
     # Parties
@@ -460,6 +460,30 @@ def extract_date_after_label(
     )
 
 
+def extract_optional_date_after_label(
+    lines: list[str],
+    label: str,
+) -> Optional[str]:
+    """
+    Extract the line immediately following a label.
+
+    Unlike extract_date_after_label(), this function returns
+    None when the label is not present.
+
+    Used for optional invoice metadata such as Due Date.
+    """
+
+    for index, line in enumerate(lines):
+
+        if line.lower() == label.lower():
+
+            if index + 1 < len(lines):
+                return lines[index + 1]
+
+            return None
+
+    return None
+
 # ============================================================
 # PARTIES
 # ============================================================
@@ -791,7 +815,7 @@ def extract_invoice(
         "Invoice Date",
     )
 
-    due_date = extract_date_after_label(
+    due_date = extract_optional_date_after_label(
         lines,
         "Due Date",
     )
