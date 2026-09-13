@@ -7,6 +7,7 @@ from frontend.api_client import (
     search_invoices,
     search_clients,
     upload_invoice,
+    delete_invoice,
 )
 
 import os
@@ -1205,6 +1206,112 @@ def invoice_detail_page(invoice_id: str):
             )
 
             return
+
+        # ----------------------------------------------------
+        # Delete Invoice
+        # ----------------------------------------------------
+
+        async def perform_delete():
+            try:
+                response = await run.io_bound(
+                    delete_invoice,
+                    invoice_id,
+                )
+
+                if response.status_code == 200:
+                    ui.notify(
+                        "Invoice deleted successfully.",
+                        type="positive",
+                    )
+
+                    ui.navigate.to("/invoices")
+                    return
+
+                if response.status_code == 404:
+                    ui.notify(
+                        "Invoice no longer exists.",
+                        type="warning",
+                    )
+
+                    ui.navigate.to("/invoices")
+                    return
+
+                try:
+                    error_data = response.json()
+                    error_message = error_data.get(
+                        "detail",
+                        response.text,
+                    )
+                except Exception:
+                    error_message = response.text
+
+                ui.notify(
+                    f"Failed to delete invoice: {error_message}",
+                    type="negative",
+                )
+
+            except Exception as error:
+                ui.notify(
+                    f"Unable to delete invoice: {error}",
+                    type="negative",
+                )
+
+        with ui.row().classes(
+            "w-full items-center justify-between mb-6"
+        ):
+            ui.label(
+                f"Invoice {invoice.get('invoice_number', '-')}"
+            ).classes(
+                "text-4xl font-bold"
+            )
+
+            with ui.dialog() as delete_dialog, ui.card().classes(
+                "w-full max-w-md"
+            ):
+                ui.label(
+                    "Delete Invoice?"
+                ).classes(
+                    "text-2xl font-bold text-red-600"
+                )
+
+                ui.label(
+                    "This action permanently removes this invoice "
+                    "and its extracted items and tax records."
+                ).classes(
+                    "text-gray-600 mt-3"
+                )
+
+                ui.label(
+                    f"Invoice: "
+                    f"{invoice.get('invoice_number', '-')}"
+                ).classes(
+                    "font-semibold mt-3"
+                )
+
+                with ui.row().classes(
+                    "w-full justify-end gap-3 mt-6"
+                ):
+                    ui.button(
+                        "CANCEL",
+                        on_click=delete_dialog.close,
+                    ).props(
+                        "outline"
+                    )
+
+                    ui.button(
+                        "DELETE",
+                        on_click=perform_delete,
+                    ).props(
+                        "color=negative unelevated"
+                    )
+
+            ui.button(
+                "DELETE INVOICE",
+                icon="delete",
+                on_click=delete_dialog.open,
+            ).props(
+                "color=negative unelevated"
+            )
 
         ui.label(
             f"Invoice {invoice.get('invoice_number', '-')}"

@@ -25,6 +25,7 @@ from database.db import (
     get_all_invoices,
     get_invoice_items,
     get_invoice_taxes,
+    delete_invoice as delete_invoice_record,
 )
 
 from database.queries import (
@@ -188,6 +189,43 @@ def get_invoices():
             for invoice in invoices
         ],
     }
+
+
+# ============================================================
+# DELETE SINGLE INVOICE
+# ============================================================
+
+@app.delete("/invoices/{invoice_id}")
+def delete_invoice(invoice_id: str):
+    """
+    Permanently delete an invoice from Firestore.
+
+    The invoice document contains its embedded items and taxes,
+    so deleting the document removes the complete invoice record.
+    """
+
+    deleted = delete_invoice_record(
+        invoice_id,
+        DEFAULT_DATABASE,
+    )
+
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Invoice with ID {invoice_id} not found.",
+        )
+
+    logger.info(
+        "Invoice deleted successfully: %s",
+        invoice_id,
+    )
+
+    return {
+        "success": True,
+        "status": "DELETED",
+        "invoice_id": invoice_id,
+    }
+
 
 # ============================================================
 # SEARCH INVOICES

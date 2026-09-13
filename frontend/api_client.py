@@ -43,6 +43,13 @@ def get_invoice(invoice_id):
     response.raise_for_status()
     return response.json()
 
+def delete_invoice(invoice_id):
+    response = requests.delete(
+        f"{API_BASE_URL}/invoices/{invoice_id}",
+        timeout=10,
+    )
+    return response
+
 
 def search_invoices(
     invoice_number=None,
