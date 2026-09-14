@@ -10,6 +10,8 @@ from frontend.api_client import (
     delete_invoice,
 )
 
+from datetime import datetime, date
+
 import os
 from dotenv import load_dotenv
 
@@ -341,6 +343,301 @@ def dashboard_page():
                     ],
                 }
             ).classes("w-full h-72")
+
+        # --------------------------------------------------------
+        # Upcoming Due Dates
+        # --------------------------------------------------------
+
+        try:
+            invoice_data = get_invoices()
+
+            all_invoices = invoice_data.get(
+                "invoices",
+                []
+            )
+
+            today = date.today()
+
+            upcoming_due_dates = []
+
+            for invoice in all_invoices:
+
+                # Only unpaid sales invoices belong in the
+                # upcoming receivables section.
+                if invoice.get("invoice_type") != "SALE":
+                    continue
+
+                total_amount = float(
+                    invoice.get("total_amount") or 0
+                )
+
+                received_amount = float(
+                    invoice.get("received_amount") or 0
+                )
+
+                if received_amount >= total_amount:
+                    continue
+
+                due_date_text = str(
+                    invoice.get("due_date") or ""
+                ).strip()
+
+                if not due_date_text:
+                    continue
+
+                try:
+                    due_date = datetime.strptime(
+                        due_date_text,
+                        "%d/%m/%Y"
+                    ).date()
+                except ValueError:
+                    continue
+
+                # Only show genuinely upcoming dates.
+                if due_date < today:
+                    continue
+
+                days_remaining = (
+                    due_date - today
+                ).days
+
+                upcoming_due_dates.append(
+                    {
+                        "invoice_id": invoice.get(
+                            "id"
+                        ),
+                        "invoice_number": invoice.get(
+                            "invoice_number",
+                            "-"
+                        ),
+                        "customer": invoice.get(
+                            "buyer",
+                            "-"
+                        ),
+                        "due_date": due_date,
+                        "due_date_text": due_date.strftime(
+                            "%d/%m/%Y"
+                        ),
+                        "amount": total_amount,
+                        "days_remaining": days_remaining,
+                    }
+                )
+
+            # Earliest due dates first.
+            upcoming_due_dates.sort(
+                key=lambda item: item["due_date"]
+            )
+
+        except Exception:
+            upcoming_due_dates = []
+
+        with ui.card().classes(
+            "w-full rounded-xl border border-gray-200 "
+            "shadow-sm p-5 mb-4"
+        ):
+
+            ui.label(
+                "Upcoming Due Dates"
+            ).classes(
+                "text-lg font-semibold text-gray-800"
+            )
+
+            ui.label(
+                "Unpaid sales invoices approaching their due dates."
+            ).classes(
+                "text-sm text-gray-500 mb-4"
+            )
+
+            if upcoming_due_dates:
+
+                due_date_columns = [
+                    {
+                        "name": "customer",
+                        "label": "Customer",
+                        "field": "customer",
+                        "align": "left",
+                    },
+                    {
+                        "name": "invoice_number",
+                        "label": "Invoice",
+                        "field": "invoice_number",
+                        "align": "left",
+                    },
+                    {
+                        "name": "due_date",
+                        "label": "Due Date",
+                        "field": "due_date",
+                        "align": "left",
+                    },
+                    {
+                        "name": "amount",
+                        "label": "Amount",
+                        "field": "amount",
+                        "align": "right",
+                    },
+                    {
+                        "name": "status",
+                        "label": "Status",
+                        "field": "status",
+                        "align": "left",
+                    },
+                ]
+                due_date_columns = [
+                    {
+                        "name": "customer",
+                        "label": "Customer",
+                        "field": "customer",
+                        "align": "left",
+                    },
+                    {
+                        "name": "invoice_number",
+                        "label": "Invoice",
+                        "field": "invoice_number",
+                        "align": "left",
+                    },
+                    {
+                        "name": "due_date",
+                        "label": "Due Date",
+                        "field": "due_date",
+                        "align": "left",
+                    },
+                    {
+                        "name": "amount",
+                        "label": "Amount",
+                        "field": "amount",
+                        "align": "right",
+                    },
+                    {
+                        "name": "status",
+                        "label": "Status",
+                        "field": "status",
+                        "align": "left",
+                    },
+                ]
+
+                due_date_rows = []
+
+                for item in upcoming_due_dates:
+
+                    days = item["days_remaining"]
+
+                    if days == 0:
+                        status = "Due today"
+                    elif days == 1:
+                        status = "Due tomorrow"
+                    else:
+                        status = f"{days} days"
+
+                    due_date_rows.append(
+                        {
+                            # Use the real invoice ID as the unique row key.
+                            "id": item["invoice_id"],
+
+                            "customer": item["customer"],
+
+                            "invoice_number": item["invoice_number"],
+
+                            "due_date": item["due_date_text"],
+
+                            "amount": format_currency(
+                                item["amount"]
+                            ),
+
+                            "status": status,
+                        }
+                    )
+
+                # ----------------------------------------------------
+                # Upcoming Due Dates table layout
+                # ----------------------------------------------------
+
+                ui.add_css("""
+                .upcoming-due-table .q-table {
+                    width: 100%;
+                    table-layout: fixed;
+                }
+
+                /* Customer */
+                .upcoming-due-table th:nth-child(1),
+                .upcoming-due-table td:nth-child(1) {
+                    width: 36%;
+                    min-width: 0;
+                }
+
+                /* Invoice */
+                .upcoming-due-table th:nth-child(2),
+                .upcoming-due-table td:nth-child(2) {
+                    width: 18%;
+                    min-width: 0;
+                }
+
+                /* Due Date */
+                .upcoming-due-table th:nth-child(3),
+                .upcoming-due-table td:nth-child(3) {
+                    width: 16%;
+                    min-width: 0;
+                }
+
+                /* Amount */
+                .upcoming-due-table th:nth-child(4),
+                .upcoming-due-table td:nth-child(4) {
+                    width: 18%;
+                    min-width: 0;
+                    padding-right: 36px;
+                }
+
+                /* Status */
+                .upcoming-due-table th:nth-child(5),
+                .upcoming-due-table td:nth-child(5) {
+                    width: 12%;
+                    min-width: 0;
+                    padding-left: 36px;
+                }
+
+                /* Prevent long customer names from breaking the table. */
+                .upcoming-due-table td:nth-child(1) {
+                    white-space: nowrap;
+                    overflow: hidden;
+                    text-overflow: ellipsis;
+                }
+
+                /* Keep invoice/date/status values on one line. */
+                .upcoming-due-table td:nth-child(2),
+                .upcoming-due-table td:nth-child(3),
+                .upcoming-due-table td:nth-child(5) {
+                    white-space: nowrap;
+                }
+
+                /* Keep currency aligned cleanly. */
+                .upcoming-due-table td:nth-child(4) {
+                    white-space: nowrap;
+                }
+                """)
+
+                ui.table(
+                    columns=due_date_columns,
+                    rows=due_date_rows,
+                    row_key="id",
+                ).classes(
+                    "w-full upcoming-due-table"
+                )
+            else:
+
+                with ui.column().classes(
+                    "w-full items-center justify-center py-8"
+                ):
+
+                    ui.icon(
+                        "event_available"
+                    ).classes(
+                        "text-5xl text-gray-300"
+                    )
+
+                    ui.label(
+                        "No upcoming sales due dates."
+                    ).classes(
+                        "text-gray-500 mt-2"
+                    )
 
         with ui.grid(columns=2).classes(
             "w-full gap-4"
