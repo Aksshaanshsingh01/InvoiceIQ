@@ -1329,17 +1329,21 @@ def invoice_detail_page(invoice_id: str):
         # Invoice Information
         # ----------------------------------------------------
 
-        with ui.card().classes(
+    with ui.card().classes(
             "w-full"
         ):
 
-            ui.label(
+        ui.label(
                 "Invoice Information"
             ).classes(
                 "text-2xl font-semibold mb-4"
             )
 
-            with ui.grid(columns=3).classes(
+            # ------------------------------------------------
+            # Core invoice information
+            # ------------------------------------------------
+
+        with ui.grid(columns=3).classes(
                 "w-full"
             ):
 
@@ -1379,18 +1383,13 @@ def invoice_detail_page(invoice_id: str):
                             "-"
                         ),
                     ),
-                    (
-                        "Source File",
-                        invoice.get(
-                            "source_file",
-                            "-"
-                        ),
-                    ),
                 ]
 
                 for label, value in fields:
 
-                    with ui.column():
+                    with ui.column().classes(
+                        "min-w-0"
+                    ):
 
                         ui.label(
                             label
@@ -1401,8 +1400,52 @@ def invoice_detail_page(invoice_id: str):
                         ui.label(
                             str(value)
                         ).classes(
-                            "font-semibold"
+                            "font-semibold break-words"
                         )
+
+            # ------------------------------------------------
+            # Source file
+            # ------------------------------------------------
+
+        source_file = str(
+                invoice.get(
+                    "source_file",
+                    "-"
+                )
+            )
+
+            # Show only the filename, not the internal
+            # server filesystem path.
+        source_filename = (
+            source_file
+            .replace("\\", "/")
+            .rsplit("/", 1)[-1]
+            )
+
+        with ui.column().classes(
+            "w-full mt-5"
+            ):
+
+                ui.label(
+                    "Source File"
+                ).classes(
+                    "text-gray-500"
+                )
+
+                ui.label(
+                    f"📄 {source_filename}"
+                ).classes(
+                    "font-semibold "
+                    "break-all "
+                    "whitespace-normal "
+                    "w-full"
+                )
+
+                ui.tooltip(
+                    source_file
+                ).classes(
+                    "max-w-xl break-all"
+                )
 
         # ----------------------------------------------------
         # Parties
