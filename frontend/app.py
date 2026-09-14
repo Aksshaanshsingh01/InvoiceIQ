@@ -1313,11 +1313,6 @@ def invoice_detail_page(invoice_id: str):
                 "color=negative unelevated"
             )
 
-        ui.label(
-            f"Invoice {invoice.get('invoice_number', '-')}"
-        ).classes(
-            "text-4xl font-bold"
-        )
 
         ui.label(
             "Invoice details and extracted information"
@@ -1329,11 +1324,11 @@ def invoice_detail_page(invoice_id: str):
         # Invoice Information
         # ----------------------------------------------------
 
-    with ui.card().classes(
+        with ui.card().classes(
             "w-full"
         ):
 
-        ui.label(
+            ui.label(
                 "Invoice Information"
             ).classes(
                 "text-2xl font-semibold mb-4"
