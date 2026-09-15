@@ -17,6 +17,7 @@ from database.db import(
     get_invoice_taxes,
     delete_invoice,
     get_database_summary,
+    record_payment,
 )
 
 
@@ -281,3 +282,87 @@ def test_delete_invoice_cascade(
         "items": 0,
         "taxes": 0,
     }
+
+def test_record_payment(
+    tmp_path,
+):
+    database = (
+        tmp_path / "test.db"
+    )
+
+    initialize_database(
+        database
+    )
+
+    invoice = extract_invoice(
+        "samples/Purchase Invoice 03.pdf"
+    )
+
+    invoice_id = insert_validated_invoice(
+        invoice,
+        "VALID",
+        database,
+    )
+
+    updated = record_payment(
+        invoice_id,
+        10000,
+        database,
+    )
+
+    assert updated["received_amount"] == 10000
+    assert updated["payment_status"] == "PARTIALLY_PAID"
+    assert updated["paid_at"] is None
+
+    updated = record_payment(
+        invoice_id,
+        invoice.total_amount - 10000,
+        database,
+    )
+
+    assert updated["received_amount"] == invoice.total_amount
+    assert updated["payment_status"] == "PAID"
+    assert updated["paid_at"] is not None
+
+
+
+def test_record_payment_cannot_exceed_outstanding(
+    tmp_path,
+):
+    database = (
+        tmp_path / "test.db"
+    )
+
+    initialize_database(
+        database
+    )
+
+    invoice = extract_invoice(
+        "samples/Purchase Invoice 03.pdf"
+    )
+
+    invoice_id = insert_validated_invoice(
+        invoice,
+        "VALID",
+        database,
+    )
+
+    record_payment(
+        invoice_id,
+        10000,
+        database,
+    )
+
+    outstanding = (
+        invoice.total_amount - 10000
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="outstanding amount",
+    ):
+        record_payment(
+            invoice_id,
+            outstanding + 1,
+            database,
+        )

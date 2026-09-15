@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,10 @@ FIRESTORE_COLLECTION = os.getenv(
     "invoices",
 )
 
+FIRESTORE_PAYMENTS_COLLECTION = os.getenv(
+    "INVOICEIQ_FIRESTORE_PAYMENTS_COLLECTION",
+    "invoice_payments",
+)
 # ============================================================
 # FIREBASE INITIALIZATION
 # ============================================================
@@ -214,6 +219,16 @@ def _invoice_to_dict(
     """
     Convert the Invoice dataclass into one Firestore document.
     """
+    total_amount = float(invoice.total_amount or 0)
+    received_amount = float(invoice.received_amount or 0)
+
+    if received_amount <= 0:
+        payment_status = "UNPAID"
+    elif received_amount >= total_amount:
+        payment_status = "PAID"
+    else:
+        payment_status = "PARTIALLY_PAID"
+
     return {
         "id": invoice_id,
         "invoice_number": invoice.invoice_number,
@@ -226,8 +241,10 @@ def _invoice_to_dict(
         "buyer_gstin": invoice.buyer_gstin,
         "total_tax": float(invoice.total_tax or 0),
         "round_off": float(invoice.round_off or 0),
-        "total_amount": float(invoice.total_amount or 0),
-        "received_amount": float(invoice.received_amount or 0),
+        "total_amount": total_amount,
+        "received_amount": received_amount,
+        "payment_status": payment_status,
+        "paid_at": None,
         "source_file": str(invoice.source_file),
         "source_filename": str(invoice.source_filename),
         "source_filename": str(invoice.source_filename),
@@ -259,8 +276,36 @@ def _invoice_to_dict(
 
 def _snapshot_to_dict(snapshot) -> dict[str, Any]:
     """Convert a Firestore document snapshot into a normal dict."""
+
     data = snapshot.to_dict() or {}
+
     data.setdefault("id", snapshot.id)
+
+    total_amount = float(
+        data.get("total_amount") or 0
+    )
+
+    received_amount = float(
+        data.get("received_amount") or 0
+    )
+
+    # --------------------------------------------------------
+    # Backward compatibility for existing invoices
+    # --------------------------------------------------------
+
+    if "payment_status" not in data:
+
+        if received_amount <= 0:
+            data["payment_status"] = "UNPAID"
+
+        elif received_amount >= total_amount:
+            data["payment_status"] = "PAID"
+
+        else:
+            data["payment_status"] = "PARTIALLY_PAID"
+
+    data.setdefault("paid_at", None)
+
     return data
 
 
@@ -509,6 +554,170 @@ def delete_invoice(
     reference.delete()
     return True
 
+def record_payment(
+    invoice_id,
+    payment_amount,
+    database=DEFAULT_DATABASE,
+    payment_method=None,
+    reference=None,
+    notes=None,
+):
+    """
+    Record a new payment against an invoice.
+
+    payment_amount is the amount of the NEW payment transaction,
+    not the cumulative amount received.
+    """
+
+    if database != "firestore":
+        raise ValueError(
+            "Payment recording is currently supported only for Firestore."
+        )
+
+    try:
+        payment_amount = float(payment_amount)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Payment amount must be a valid number."
+        ) from exc
+
+    if payment_amount <= 0:
+        raise ValueError(
+            "Payment amount must be greater than zero."
+        )
+
+    db = get_firestore_client()
+
+    invoice_ref = db.collection(
+        FIRESTORE_COLLECTION
+    ).document(invoice_id)
+
+    invoice_snapshot = invoice_ref.get()
+
+    if not invoice_snapshot.exists:
+        raise ValueError(
+            f"Invoice {invoice_id} not found."
+        )
+
+    invoice = invoice_snapshot.to_dict() or {}
+
+    total_amount = float(
+        invoice.get("total_amount") or 0
+    )
+
+    received_amount = float(
+        invoice.get("received_amount") or 0
+    )
+
+    outstanding_amount = max(
+        total_amount - received_amount,
+        0,
+    )
+
+    if payment_amount > outstanding_amount + 0.01:
+        raise ValueError(
+            "Payment amount exceeds the outstanding amount."
+        )
+
+    new_received_amount = (
+        received_amount + payment_amount
+    )
+
+    # Avoid tiny floating-point differences.
+    if abs(new_received_amount - total_amount) <= 0.01:
+        new_received_amount = total_amount
+
+    if new_received_amount >= total_amount:
+        new_received_amount = total_amount
+        payment_status = "PAID"
+        paid_at = datetime.now(
+            timezone.utc
+        ).isoformat()
+    else:
+        payment_status = "PARTIALLY_PAID"
+        paid_at = None
+
+    # ---------------------------------------------------------
+    # 1. Create the payment transaction
+    # ---------------------------------------------------------
+
+    payment_ref = db.collection(
+        FIRESTORE_PAYMENTS_COLLECTION
+    ).document()
+
+    payment_data = {
+        "invoice_id": invoice_id,
+        "invoice_number": invoice.get(
+            "invoice_number"
+        ),
+        "payment_amount": payment_amount,
+        "payment_date": datetime.now(
+            timezone.utc
+        ).isoformat(),
+        "payment_method": payment_method,
+        "reference": reference,
+        "notes": notes,
+    }
+
+    payment_ref.create(payment_data)
+
+    # ---------------------------------------------------------
+    # 2. Update cumulative invoice payment state
+    # ---------------------------------------------------------
+
+    invoice_ref.update({
+        "received_amount": new_received_amount,
+        "payment_status": payment_status,
+        "paid_at": paid_at,
+    })
+
+    updated_invoice = dict(invoice)
+
+    updated_invoice["id"] = invoice_id
+    updated_invoice["received_amount"] = (
+        new_received_amount
+    )
+    updated_invoice["payment_status"] = (
+        payment_status
+    )
+    updated_invoice["paid_at"] = paid_at
+
+    return updated_invoice  
+
+def get_payment_history(invoice_id, database=DEFAULT_DATABASE):
+    """
+    Return all payment transactions recorded for an invoice.
+
+    Payments are stored separately from the invoice document so that
+    individual payment transactions are preserved.
+    """
+
+    if database != "firestore":
+        raise ValueError(
+            "Payment history is currently supported only for Firestore."
+        )
+
+    db = get_firestore_client()
+
+    query = (
+        db.collection(FIRESTORE_PAYMENTS_COLLECTION)
+        .where("invoice_id", "==", invoice_id)
+        .stream()
+    )
+
+    payments = []
+
+    for doc in query:
+        payment = doc.to_dict()
+        payment["id"] = doc.id
+        payments.append(payment)
+
+    payments.sort(
+        key=lambda payment: payment.get("payment_date", ""),
+        reverse=True,
+    )
+
+    return payments 
 
 # ============================================================
 # DATABASE SUMMARY

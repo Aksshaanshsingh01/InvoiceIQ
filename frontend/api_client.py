@@ -43,6 +43,7 @@ def get_invoice(invoice_id):
     response.raise_for_status()
     return response.json()
 
+
 def delete_invoice(invoice_id):
     response = requests.delete(
         f"{API_BASE_URL}/invoices/{invoice_id}",
@@ -50,6 +51,35 @@ def delete_invoice(invoice_id):
     )
     return response
 
+
+def record_payment(
+    invoice_id,
+    payment_amount,
+    payment_method=None,
+    reference=None,
+    notes=None,
+):
+    response = requests.post(
+        f"{API_BASE_URL}/invoices/{invoice_id}/payment",
+        json={
+            "payment_amount": payment_amount,
+            "payment_method": payment_method,
+            "reference": reference,
+            "notes": notes,
+        },
+        timeout=10,
+    )
+
+    return response
+
+
+def get_payment_history(invoice_id):
+    response = requests.get(
+        f"{API_BASE_URL}/invoices/{invoice_id}/payments",
+        timeout=10,
+    )
+
+    return response  
 
 def search_invoices(
     invoice_number=None,

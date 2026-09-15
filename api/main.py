@@ -19,6 +19,8 @@ from fastapi import (
     UploadFile,
 )
 
+from pydantic import BaseModel
+
 from database.db import (
     DEFAULT_DATABASE,
     initialize_database,
@@ -26,6 +28,8 @@ from database.db import (
     get_invoice_items,
     get_invoice_taxes,
     delete_invoice as delete_invoice_record,
+    record_payment,
+    get_payment_history,
 )
 
 from database.queries import (
@@ -37,6 +41,7 @@ from database.queries import (
     get_invoices_by_type,
     get_invoices_by_date_range,
 )
+
 
 from analytics.dashboard import get_dashboard_metrics
 from database.client_queries import search_clients as search_client_records
@@ -132,6 +137,13 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+class PaymentRequest(BaseModel):
+    payment_amount: float
+    payment_method: str | None = None
+    reference: str | None = None
+    notes: str | None = None
+
 
 # ============================================================
 # STARTUP
@@ -468,6 +480,70 @@ def get_invoice(invoice_id: str):
             dict(tax)
             for tax in taxes
         ],
+    }
+
+# ============================================================
+# RECORD PAYMENT
+# ============================================================
+
+@app.post("/invoices/{invoice_id}/payment")
+def record_invoice_payment(
+    invoice_id: str,
+    payment: PaymentRequest,
+):
+    """
+    Record a new payment against an invoice.
+    """
+
+    try:
+        updated_invoice = record_payment(
+            invoice_id,
+            payment.payment_amount,
+            DEFAULT_DATABASE,
+        )
+
+    except ValueError as exc:
+        message = str(exc)
+
+        if "not found" in message.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=message,
+            ) from exc
+
+        raise HTTPException(
+            status_code=400,
+            detail=message,
+        ) from exc
+
+    logger.info(
+        "Payment recorded for invoice %s: %.2f",
+        invoice_id,
+        payment.payment_amount,
+    )
+
+    return {
+        "success": True,
+        "invoice": dict(updated_invoice),
+    }
+
+@app.get("/invoices/{invoice_id}/payments")
+def get_invoice_payment_history(invoice_id: str):
+    try:
+        payments = get_payment_history(
+            invoice_id,
+            DEFAULT_DATABASE,
+        )
+
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "success": True,
+        "payments": payments,
     }
 
 # ============================================================

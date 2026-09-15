@@ -1,5 +1,11 @@
 from nicegui import events, run, ui
 
+ui.add_head_html(
+    '<link href="https://fonts.googleapis.com/icon?family=Material+Icons" '
+    'rel="stylesheet">',
+    shared=True,
+)
+
 from frontend.api_client import (
     get_dashboard,
     get_invoices,
@@ -8,6 +14,8 @@ from frontend.api_client import (
     search_clients,
     upload_invoice,
     delete_invoice,
+    record_payment,
+    get_payment_history,
 )
 
 from datetime import datetime, date
@@ -344,8 +352,8 @@ def dashboard_page():
                 }
             ).classes("w-full h-72")
 
-        # --------------------------------------------------------
-        # Upcoming Due Dates
+                # --------------------------------------------------------
+        # Receivables Due & Overdue
         # --------------------------------------------------------
 
         try:
@@ -357,13 +365,11 @@ def dashboard_page():
             )
 
             today = date.today()
-
-            upcoming_due_dates = []
+            receivables = []
 
             for invoice in all_invoices:
 
-                # Only unpaid sales invoices belong in the
-                # upcoming receivables section.
+                # Only sales invoices are customer receivables.
                 if invoice.get("invoice_type") != "SALE":
                     continue
 
@@ -375,7 +381,13 @@ def dashboard_page():
                     invoice.get("received_amount") or 0
                 )
 
-                if received_amount >= total_amount:
+                outstanding_amount = max(
+                    total_amount - received_amount,
+                    0,
+                )
+
+                # Fully paid invoices should never appear here.
+                if outstanding_amount <= 0.01:
                     continue
 
                 due_date_text = str(
@@ -393,19 +405,22 @@ def dashboard_page():
                 except ValueError:
                     continue
 
-                # Only show genuinely upcoming dates.
-                if due_date < today:
-                    continue
-
-                days_remaining = (
+                days_difference = (
                     due_date - today
                 ).days
 
-                upcoming_due_dates.append(
+                payment_status = (
+                    invoice.get("payment_status")
+                    or (
+                        "PARTIALLY_PAID"
+                        if received_amount > 0
+                        else "UNPAID"
+                    )
+                )
+
+                receivables.append(
                     {
-                        "invoice_id": invoice.get(
-                            "id"
-                        ),
+                        "invoice_id": invoice.get("id"),
                         "invoice_number": invoice.get(
                             "invoice_number",
                             "-"
@@ -418,18 +433,24 @@ def dashboard_page():
                         "due_date_text": due_date.strftime(
                             "%d/%m/%Y"
                         ),
-                        "amount": total_amount,
-                        "days_remaining": days_remaining,
+                        "outstanding_amount": outstanding_amount,
+                        "payment_status": payment_status,
+                        "days_difference": days_difference,
                     }
                 )
 
-            # Earliest due dates first.
-            upcoming_due_dates.sort(
+            # ----------------------------------------------------
+            # Sort:
+            # 1. Overdue first
+            # 2. Then earliest upcoming due date
+            # ----------------------------------------------------
+
+            receivables.sort(
                 key=lambda item: item["due_date"]
             )
 
         except Exception:
-            upcoming_due_dates = []
+            receivables = []
 
         with ui.card().classes(
             "w-full rounded-xl border border-gray-200 "
@@ -437,18 +458,18 @@ def dashboard_page():
         ):
 
             ui.label(
-                "Upcoming Due Dates"
+                "Receivables Due & Overdue"
             ).classes(
                 "text-lg font-semibold text-gray-800"
             )
 
             ui.label(
-                "Unpaid sales invoices approaching their due dates."
+                "Outstanding customer payments based on invoice due dates."
             ).classes(
                 "text-sm text-gray-500 mb-4"
             )
 
-            if upcoming_due_dates:
+            if receivables:
 
                 due_date_columns = [
                     {
@@ -471,45 +492,19 @@ def dashboard_page():
                     },
                     {
                         "name": "amount",
-                        "label": "Amount",
+                        "label": "Outstanding",
                         "field": "amount",
                         "align": "right",
                     },
                     {
-                        "name": "status",
-                        "label": "Status",
-                        "field": "status",
+                        "name": "payment",
+                        "label": "Payment",
+                        "field": "payment",
                         "align": "left",
-                    },
-                ]
-                due_date_columns = [
-                    {
-                        "name": "customer",
-                        "label": "Customer",
-                        "field": "customer",
-                        "align": "left",
-                    },
-                    {
-                        "name": "invoice_number",
-                        "label": "Invoice",
-                        "field": "invoice_number",
-                        "align": "left",
-                    },
-                    {
-                        "name": "due_date",
-                        "label": "Due Date",
-                        "field": "due_date",
-                        "align": "left",
-                    },
-                    {
-                        "name": "amount",
-                        "label": "Amount",
-                        "field": "amount",
-                        "align": "right",
                     },
                     {
                         "name": "status",
-                        "label": "Status",
+                        "label": "Due Status",
                         "field": "status",
                         "align": "left",
                     },
@@ -517,38 +512,74 @@ def dashboard_page():
 
                 due_date_rows = []
 
-                for item in upcoming_due_dates:
+                for item in receivables:
 
-                    days = item["days_remaining"]
+                    days = item[
+                        "days_difference"
+                    ]
 
-                    if days == 0:
-                        status = "Due today"
+                    payment_status = item[
+                        "payment_status"
+                    ]
+
+                    # ------------------------------------------------
+                    # Due-date status
+                    # ------------------------------------------------
+
+                    if days < 0:
+                        overdue_days = abs(days)
+
+                        if overdue_days == 1:
+                            due_status = "1 day overdue"
+                        else:
+                            due_status = (
+                                f"{overdue_days} days overdue"
+                            )
+
+                    elif days == 0:
+                        due_status = "Due today"
+
                     elif days == 1:
-                        status = "Due tomorrow"
+                        due_status = "Due tomorrow"
+
                     else:
-                        status = f"{days} days"
+                        due_status = f"Due in {days} days"
+
+                    # ------------------------------------------------
+                    # Payment status label
+                    # ------------------------------------------------
+
+                    if payment_status == "PAID":
+                        payment_label = "PAID"
+
+                    elif payment_status == "PARTIALLY_PAID":
+                        payment_label = "PARTIALLY PAID"
+
+                    else:
+                        payment_label = "UNPAID"
 
                     due_date_rows.append(
                         {
-                            # Use the real invoice ID as the unique row key.
                             "id": item["invoice_id"],
-
                             "customer": item["customer"],
-
-                            "invoice_number": item["invoice_number"],
-
-                            "due_date": item["due_date_text"],
-
+                            "invoice_number": item[
+                                "invoice_number"
+                            ],
+                            "due_date": item[
+                                "due_date_text"
+                            ],
                             "amount": format_currency(
-                                item["amount"]
+                                item[
+                                    "outstanding_amount"
+                                ]
                             ),
-
-                            "status": status,
+                            "payment": payment_label,
+                            "status": due_status,
                         }
                     )
 
                 # ----------------------------------------------------
-                # Upcoming Due Dates table layout
+                # Table styling
                 # ----------------------------------------------------
 
                 ui.add_css("""
@@ -560,38 +591,46 @@ def dashboard_page():
                 /* Customer */
                 .upcoming-due-table th:nth-child(1),
                 .upcoming-due-table td:nth-child(1) {
-                    width: 36%;
+                    width: 28%;
                     min-width: 0;
                 }
 
                 /* Invoice */
                 .upcoming-due-table th:nth-child(2),
                 .upcoming-due-table td:nth-child(2) {
-                    width: 18%;
+                    width: 17%;
                     min-width: 0;
                 }
 
                 /* Due Date */
                 .upcoming-due-table th:nth-child(3),
                 .upcoming-due-table td:nth-child(3) {
-                    width: 16%;
+                    width: 13%;
                     min-width: 0;
                 }
 
-                /* Amount */
+                /* Outstanding */
                 .upcoming-due-table th:nth-child(4),
                 .upcoming-due-table td:nth-child(4) {
-                    width: 18%;
+                    width: 17%;
                     min-width: 0;
-                    padding-right: 36px;
+                    padding-right: 20px;
                 }
 
-                /* Status */
+                /* Payment */
                 .upcoming-due-table th:nth-child(5),
                 .upcoming-due-table td:nth-child(5) {
+                    width: 13%;
+                    min-width: 0;
+                    padding-left: 10px;
+                }
+
+                /* Due Status */
+                .upcoming-due-table th:nth-child(6),
+                .upcoming-due-table td:nth-child(6) {
                     width: 12%;
                     min-width: 0;
-                    padding-left: 36px;
+                    padding-left: 10px;
                 }
 
                 /* Prevent long customer names from breaking the table. */
@@ -601,10 +640,11 @@ def dashboard_page():
                     text-overflow: ellipsis;
                 }
 
-                /* Keep invoice/date/status values on one line. */
+                /* Keep invoice/date/payment/status values on one line. */
                 .upcoming-due-table td:nth-child(2),
                 .upcoming-due-table td:nth-child(3),
-                .upcoming-due-table td:nth-child(5) {
+                .upcoming-due-table td:nth-child(5),
+                .upcoming-due-table td:nth-child(6) {
                     white-space: nowrap;
                 }
 
@@ -621,6 +661,7 @@ def dashboard_page():
                 ).classes(
                     "w-full upcoming-due-table"
                 )
+
             else:
 
                 with ui.column().classes(
@@ -634,10 +675,10 @@ def dashboard_page():
                     )
 
                     ui.label(
-                        "No upcoming sales due dates."
+                        "No outstanding sales receivables."
                     ).classes(
                         "text-gray-500 mt-2"
-                    )
+                    ) 
 
         with ui.grid(columns=2).classes(
             "w-full gap-4"
@@ -1985,24 +2026,370 @@ def invoice_detail_page(invoice_id: str):
                 "text-gray-500"
             )
 
+                # ----------------------------------------------------
+        # Payment & Totals
         # ----------------------------------------------------
-        # Totals
+
+        total_amount = float(
+            invoice.get("total_amount") or 0
+        )
+
+        received_amount = float(
+            invoice.get("received_amount") or 0
+        )
+
+        outstanding_amount = max(
+            total_amount - received_amount,
+            0,
+        )
+
+        payment_status = (
+            invoice.get("payment_status")
+            or (
+                "PAID"
+                if outstanding_amount <= 0.01
+                else (
+                    "PARTIALLY_PAID"
+                    if received_amount > 0
+                    else "UNPAID"
+                )
+            )
+        )
+
+        status_labels = {
+            "PAID": "PAID",
+            "PARTIALLY_PAID": "PARTIALLY PAID",
+            "UNPAID": "UNPAID",
+        }
+
+        status_classes = {
+            "PAID": "text-green-600",
+            "PARTIALLY_PAID": "text-orange-600",
+            "UNPAID": "text-red-600",
+        }
+
+        status_label = status_labels.get(
+            payment_status,
+            payment_status,
+        )
+
+        status_class = status_classes.get(
+            payment_status,
+            "text-gray-600",
+        )
+
+        # ----------------------------------------------------
+        # Record Payment
+        # ----------------------------------------------------
+
+        async def perform_payment(
+            payment_dialog,
+            amount_input,
+            method_input,
+            reference_input,
+            notes_input,
+        ):
+            try:
+                amount_text = str(
+                    amount_input.value or ""
+                ).strip()
+
+                if not amount_text:
+                    ui.notify(
+                        "Please enter a payment amount.",
+                        type="warning",
+                    )
+                    return
+
+                try:
+                    payment_amount = float(
+                        amount_text.replace(",", "")
+                    )
+                except ValueError:
+                    ui.notify(
+                        "Please enter a valid payment amount.",
+                        type="negative",
+                    )
+                    return
+
+                if payment_amount <= 0:
+                    ui.notify(
+                        "Payment amount must be greater than zero.",
+                        type="warning",
+                    )
+                    return
+
+                payment_method = (
+                    method_input.value
+                    if method_input.value
+                    else None
+                )
+
+                reference = (
+                    str(reference_input.value).strip()
+                    if reference_input.value
+                    else None
+                )
+
+                notes = (
+                    str(notes_input.value).strip()
+                    if notes_input.value
+                    else None
+                )
+
+                response = await run.io_bound(
+                    record_payment,
+                    invoice_id,
+                    payment_amount,
+                    payment_method,
+                    reference,
+                    notes,
+                )
+
+                if response.status_code == 200:
+                    ui.notify(
+                        "Payment recorded successfully.",
+                        type="positive",
+                    )
+
+                    payment_dialog.close()
+
+                    # Reload the invoice page so all payment
+                    # figures and payment history come from the API.
+                    ui.navigate.to(
+                        f"/invoices/{invoice_id}"
+                    )
+                    return
+
+                try:
+                    error_data = response.json()
+                    error_message = error_data.get(
+                        "detail",
+                        response.text,
+                    )
+                except Exception:
+                    error_message = response.text
+
+                ui.notify(
+                    f"Payment failed: {error_message}",
+                    type="negative",
+                )
+
+            except Exception as error:
+                ui.notify(
+                    f"Unable to record payment: {error}",
+                    type="negative",
+                )
+
+        # ----------------------------------------------------
+        # Payment Summary Card
         # ----------------------------------------------------
 
         with ui.card().classes(
-            "w-full mt-8"
+            "w-full mt-8 border border-gray-200 shadow-sm"
         ):
 
-            ui.label(
-                "Totals"
-            ).classes(
-                "text-2xl font-semibold mb-4"
-            )
+            with ui.row().classes(
+                "w-full items-center justify-between mb-5"
+            ):
+
+                ui.label(
+                    "Payment & Totals"
+                ).classes(
+                    "text-2xl font-semibold"
+                )
+
+                # ------------------------------------------------
+                # Record Payment Dialog
+                # ------------------------------------------------
+
+                with ui.dialog() as payment_dialog, ui.card().classes(
+                    "w-full max-w-md"
+                ):
+
+                    ui.label(
+                        "Record Payment"
+                    ).classes(
+                        "text-2xl font-bold"
+                    )
+
+                    ui.label(
+                        f"Invoice: "
+                        f"{invoice.get('invoice_number', '-')}"
+                    ).classes(
+                        "text-gray-500 mt-2"
+                    )
+
+                    ui.label(
+                        f"Outstanding: "
+                        f"{format_currency(outstanding_amount)}"
+                    ).classes(
+                        "font-semibold text-red-600 mt-4"
+                    )
+
+                    amount_input = ui.input(
+                        label="Payment Amount",
+                        placeholder="e.g. 10000",
+                    ).props(
+                        "type=number min=0 step=0.01"
+                    ).classes(
+                        "w-full mt-3"
+                    )
+
+                    method_input = ui.select(
+                        [
+                            "Bank Transfer",
+                            "UPI",
+                            "Cash",
+                            "Cheque",
+                            "Other",
+                        ],
+                        label="Payment Method",
+                        clearable=True,
+                    ).classes(
+                        "w-full mt-3"
+                    )
+
+                    reference_input = ui.input(
+                        label="Reference",
+                        placeholder="e.g. NEFT123 / UPI reference",
+                    ).classes(
+                        "w-full mt-3"
+                    )
+
+                    notes_input = ui.input(
+                        label="Notes",
+                        placeholder="Optional notes",
+                    ).classes(
+                        "w-full mt-3"
+                    )
+
+                    with ui.row().classes(
+                        "w-full justify-end gap-3 mt-5"
+                    ):
+
+                        ui.button(
+                            "CANCEL",
+                            on_click=payment_dialog.close,
+                        ).props(
+                            "outline"
+                        )
+
+                        ui.button(
+                            "RECORD PAYMENT",
+                            icon="payments",
+                            on_click=lambda: perform_payment(
+                                payment_dialog,
+                                amount_input,
+                                method_input,
+                                reference_input,
+                                notes_input,
+                            ),
+                        ).props(
+                            "color=primary unelevated"
+                        )
+
+                # ------------------------------------------------
+                # Record Payment Button
+                # ------------------------------------------------
+
+                if outstanding_amount > 0.01:
+                    ui.button(
+                        "RECORD PAYMENT",
+                        icon="payments",
+                        on_click=payment_dialog.open,
+                    ).props(
+                        "color=primary unelevated"
+                    ).classes(
+                        "rounded-lg"
+                    )
+                else:
+                    ui.button(
+                        "FULLY PAID",
+                        icon="check_circle",
+                    ).props(
+                        "color=positive outline"
+                    ).classes(
+                        "rounded-lg"
+                    )
+
+            # ----------------------------------------------------
+            # Payment Summary
+            # ----------------------------------------------------
+
+            with ui.grid(columns=4).classes(
+                "w-full gap-4 mb-6"
+            ):
+
+                with ui.card().classes(
+                    "border border-gray-200 shadow-none p-4"
+                ):
+                    ui.label(
+                        "GRAND TOTAL"
+                    ).classes(
+                        "text-xs font-bold tracking-wider text-gray-500"
+                    )
+
+                    ui.label(
+                        format_currency(total_amount)
+                    ).classes(
+                        "text-xl font-bold mt-2"
+                    )
+
+                with ui.card().classes(
+                    "border border-gray-200 shadow-none p-4"
+                ):
+                    ui.label(
+                        "RECEIVED"
+                    ).classes(
+                        "text-xs font-bold tracking-wider text-gray-500"
+                    )
+
+                    ui.label(
+                        format_currency(received_amount)
+                    ).classes(
+                        "text-xl font-bold text-green-600 mt-2"
+                    )
+
+                with ui.card().classes(
+                    "border border-gray-200 shadow-none p-4"
+                ):
+                    ui.label(
+                        "OUTSTANDING"
+                    ).classes(
+                        "text-xs font-bold tracking-wider text-gray-500"
+                    )
+
+                    ui.label(
+                        format_currency(outstanding_amount)
+                    ).classes(
+                        f"text-xl font-bold "
+                        f"{'text-green-600' if outstanding_amount <= 0.01 else 'text-red-600'} "
+                        "mt-2"
+                    )
+
+                with ui.card().classes(
+                    "border border-gray-200 shadow-none p-4"
+                ):
+                    ui.label(
+                        "PAYMENT STATUS"
+                    ).classes(
+                        "text-xs font-bold tracking-wider text-gray-500"
+                    )
+
+                    ui.label(
+                        status_label
+                    ).classes(
+                        f"text-xl font-bold {status_class} mt-2"
+                    )
+
+            # ----------------------------------------------------
+            # Existing invoice totals
+            # ----------------------------------------------------
 
             with ui.column().classes(
                 "w-full items-end"
             ):
-
                 ui.label(
                     f"Total Tax: "
                     f"{format_currency(invoice.get('total_tax'))}"
@@ -2014,19 +2401,174 @@ def invoice_detail_page(invoice_id: str):
                 )
 
                 ui.label(
-                    f"Received: "
-                    f"{format_currency(invoice.get('received_amount'))}"
-                )
-
-                ui.label(
                     f"Grand Total: "
-                    f"{format_currency(invoice.get('total_amount'))}"
+                    f"{format_currency(total_amount)}"
                 ).classes(
                     "text-2xl font-bold mt-2"
                 )
 
+                if payment_status == "PAID":
+                    paid_at = invoice.get("paid_at")
 
-# ============================================================
+                    if paid_at:
+                        ui.label(
+                            f"Paid at: {paid_at}"
+                        ).classes(
+                            "text-sm text-green-600 mt-1"
+                        )
+
+        # ----------------------------------------------------
+        # Payment History
+        # ----------------------------------------------------
+
+        with ui.card().classes(
+            "w-full mt-6 border border-gray-200 shadow-sm"
+        ):
+            ui.label(
+                "Payment History"
+            ).classes(
+                "text-2xl font-semibold mb-1"
+            )
+
+            ui.label(
+                "Individual payment transactions recorded against this invoice."
+            ).classes(
+                "text-sm text-gray-500 mb-4"
+            )
+
+            try:
+                payment_response = get_payment_history(
+                    invoice_id
+                )
+
+                if payment_response.status_code == 200:
+                    payment_data = payment_response.json()
+                    payments = payment_data.get(
+                        "payments",
+                        []
+                    )
+
+                    if payments:
+                        payment_columns = [
+                            {
+                                "name": "payment_date",
+                                "label": "Date",
+                                "field": "payment_date",
+                                "align": "left",
+                            },
+                            {
+                                "name": "payment_amount",
+                                "label": "Amount",
+                                "field": "payment_amount",
+                                "align": "right",
+                            },
+                            {
+                                "name": "payment_method",
+                                "label": "Method",
+                                "field": "payment_method",
+                                "align": "left",
+                            },
+                            {
+                                "name": "reference",
+                                "label": "Reference",
+                                "field": "reference",
+                                "align": "left",
+                            },
+                            {
+                                "name": "notes",
+                                "label": "Notes",
+                                "field": "notes",
+                                "align": "left",
+                            },
+                        ]
+
+                        payment_rows = []
+
+                        for payment in payments:
+                            payment_date = str(
+                                payment.get(
+                                    "payment_date",
+                                    "-"
+                                )
+                            )
+
+                            if "T" in payment_date:
+                                payment_date = (
+                                    payment_date
+                                    .split("T")[0]
+                                )
+
+                            payment_rows.append({
+                                "payment_date": payment_date,
+                                "payment_amount": format_currency(
+                                    float(
+                                        payment.get(
+                                            "payment_amount"
+                                        ) or 0
+                                    )
+                                ),
+                                "payment_method": (
+                                    payment.get(
+                                        "payment_method"
+                                    )
+                                    or "-"
+                                ),
+                                "reference": (
+                                    payment.get(
+                                        "reference"
+                                    )
+                                    or "-"
+                                ),
+                                "notes": (
+                                    payment.get(
+                                        "notes"
+                                    )
+                                    or "-"
+                                ),
+                            })
+
+                        with ui.element("div").classes(
+                            "w-full overflow-x-auto"
+                        ):
+                            ui.table(
+                                columns=payment_columns,
+                                rows=payment_rows,
+                                row_key="payment_date",
+                            ).classes(
+                                "w-full"
+                            )
+
+                    else:
+                        with ui.column().classes(
+                            "w-full items-center justify-center py-8"
+                        ):
+                            ui.icon(
+                                "payments"
+                            ).classes(
+                                "text-5xl text-gray-300"
+                            )
+
+                            ui.label(
+                                "No payment transactions recorded yet."
+                            ).classes(
+                                "text-gray-500 mt-2"
+                            )
+
+                else:
+                    ui.label(
+                        "Unable to load payment history."
+                    ).classes(
+                        "text-red-500"
+                    )
+
+            except Exception as error:
+                ui.label(
+                    f"Unable to load payment history: {error}"
+                ).classes(
+                    "text-red-500"
+                )
+
+        # ============================================================
 # UPLOAD
 # ============================================================
 
