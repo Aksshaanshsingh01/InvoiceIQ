@@ -4,14 +4,7 @@
 
 **InvoiceIQ** is a PDF invoice-processing and analytics app for teams that handle supplier and customer invoices. It reduces manual data entry by extracting invoice details, checking financial consistency, storing records, and surfacing totals, outstanding balances, and payment activity in a dashboard.
 
-<!-- Add a live demo URL here once confirmed:
-[Live Demo](YOUR_DEPLOYED_URL)
--->
 
-<!-- Add screenshots in a `docs/screenshots/` folder and uncomment/update:
-## Preview
-![alt text](image-1.png)
--->![alt text](image-2.png)
 
 ## What it does
 
