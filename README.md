@@ -1,43 +1,78 @@
 # InvoiceIQ
 
-InvoiceIQ is an invoice-processing and analytics application. It extracts information from invoice PDFs, validates the extracted data, stores invoice records in Firestore, and presents invoice and financial insights through a NiceGUI web interface.
+> Turn invoice PDFs into structured, validated financial data and actionable invoice insights.
 
-## Features
+**InvoiceIQ** is a PDF invoice-processing and analytics app for teams that handle supplier and customer invoices. It reduces manual data entry by extracting invoice details, checking financial consistency, storing records, and surfacing totals, outstanding balances, and payment activity in a dashboard.
 
-- PDF text extraction with PyMuPDF
-- Invoice parsing for parties, line items, taxes, totals, and round-off
-- Validation of extracted data and financial consistency
-- Batch processing of invoice PDFs
-- Firestore persistence
-- Financial, invoice, tax, party, and dashboard analytics
-- Invoice search and detail views
-- Invoice upload through the web interface
-- Payment tracking and payment-history interface
-- Excel export
+<!-- Add a live demo URL here once confirmed:
+[Live Demo](YOUR_DEPLOYED_URL)
+-->
 
-## Tech Stack
+<!-- Add screenshots in a `docs/screenshots/` folder and uncomment/update:
+## Preview
+![alt text](image-1.png)
+-->![alt text](image-2.png)
 
-Python · FastAPI · NiceGUI · PyMuPDF · Firebase Admin SDK · Google Cloud Firestore · Pandas · Pytest
+## What it does
 
-## Project Structure
+- Extracts invoice text from PDFs with PyMuPDF.
+- Parses parties, invoice metadata, line items, taxes, totals, and round-off.
+- Validates extracted values and financial consistency.
+- Processes batches of invoice PDFs.
+- Persists invoice records in Google Cloud Firestore.
+- Displays financial, invoice, tax, party, and dashboard analytics.
+- Supports invoice search, detail views, upload, and deletion.
+- Tracks received and outstanding amounts, with a payment-history interface.
+- Exports extracted data to Excel.
 
-```text
-InvoiceIQ/
-├── analytics/       # Financial and invoice analytics
-├── api/             # FastAPI application
-├── database/        # Firestore connection and query layer
-├── extraction/      # PDF extraction, parsing, validation, batch processing
-├── export/          # Excel export
-├── frontend/        # NiceGUI app and API client
-├── tests/           # Automated tests
-├── samples/         # Sample PDFs; avoid confidential documents
-├── uploads/         # Runtime uploads; keep out of version control
-├── output/          # Generated files; keep out of version control
-├── requirements.txt
-└── requirements-dev.txt
+## Architecture
+
+```mermaid
+flowchart TD
+    A[Invoice PDF] --> B[PDF text extraction]
+    B --> C[Parsing: parties, items, taxes, totals]
+    C --> D[Validation]
+    D --> E[Firestore]
+    E --> F[Analytics and query layer]
+    F --> G[FastAPI]
+    G --> H[NiceGUI frontend]
+    H --> I[Dashboard, invoice views, payment UI, exports]
 ```
 
+## Tech stack
+
+- **Language:** Python
+- **API:** FastAPI
+- **UI:** NiceGUI
+- **PDF processing:** PyMuPDF
+- **Database:** Google Cloud Firestore / Firebase Admin SDK
+- **Data and export:** Pandas, Excel tooling
+- **Testing:** Pytest
+
+## Quick Start
+
+Run these from the repository root after installing dependencies and configuring Firebase:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m uvicorn api.main:app --reload
+```
+
+In a **second terminal**:
+
+```powershell
+python -m frontend.app
+```
+
+Open the local frontend URL printed in the terminal. Make sure the frontend API base URL points to the API you started.
+
 ## Local Setup
+
+### Requirements
+
+- Python version: use the version supported by your dependencies and hosting environment. Pin the exact tested version here after checking your local environment and deployment configuration.
+- A Firebase project with Cloud Firestore enabled.
+- Firebase credentials available to the local runtime.
 
 ### 1. Clone the repository
 
@@ -46,7 +81,7 @@ git clone https://github.com/Aksshaanshsingh01/InvoiceIQ.git
 cd InvoiceIQ
 ```
 
-### 2. Create and activate a virtual environment
+### 2. Create a virtual environment
 
 Windows PowerShell:
 
@@ -76,29 +111,25 @@ python -m pip install -r requirements-dev.txt
 
 ### 4. Configure Firebase
 
-Create a `.env` file based on `.env.example` and configure the Firebase settings required by the project. Set up Firestore and provide credentials securely to the local runtime.
-
-**Never commit `.env`, Firebase service-account JSON files, private keys, or real customer invoices.** For hosted deployments, configure secrets through the hosting provider.
+Create a `.env` file based on `.env.example` and configure the Firebase settings required by the project. Enable Firestore and provide credentials securely to the local runtime.
 
 Use the exact environment-variable names and credential setup documented in `.env.example` and the database initialization code.
 
-### 5. Start the API
+**Never commit `.env`, Firebase service-account JSON files, private keys, or real customer invoices.** For hosted deployments, configure secrets through the hosting provider.
 
-From the repository root:
+### 5. Start the API and frontend
 
-```bash
+Start the API in one terminal:
+
+```powershell
 python -m uvicorn api.main:app --reload
 ```
 
-### 6. Start the frontend
+Start the frontend from the repository root in another terminal:
 
-Open a second terminal from the repository root:
-
-```bash
+```powershell
 python -m frontend.app
 ```
-
-Open the local URL printed by the frontend. Ensure the frontend API base URL is configured to reach the running API.
 
 ## Run Tests
 
@@ -106,24 +137,49 @@ Open the local URL printed by the frontend. Ensure the frontend API base URL is 
 pytest
 ```
 
-## Deployment Checklist
+## Project Structure
 
-Before sharing a public demo:
+```text
+InvoiceIQ/
+├── analytics/       # Financial, invoice, tax, party, and dashboard analytics
+├── api/             # FastAPI application
+├── database/        # Firestore connection and query layer
+├── extraction/      # PDF extraction, parsing, validation, and batch processing
+├── export/          # Excel export functionality
+├── frontend/        # NiceGUI app and API client
+├── tests/           # Automated tests
+├── samples/         # Sample PDFs; do not add confidential documents
+├── uploads/         # Runtime uploads; keep out of version control
+├── output/          # Generated files; keep out of version control
+├── requirements.txt
+└── requirements-dev.txt
+```
 
-1. Configure the deployed frontend to use the correct API URL.
-2. Configure required environment variables and Firestore credentials.
-3. Verify Firestore connectivity from the hosted service.
-4. Test upload, invoice retrieval, deletion, and payment recording.
-5. Verify payment history persists after reload and redeployment.
-6. Avoid using confidential invoices in a public demo unless appropriate access controls are in place.
+## Deployment
 
-## Security and Data
+The app needs a reachable frontend and API, plus valid Firestore credentials.
 
-- Keep credentials and private keys out of Git.
-- Do not commit real invoices or customer data.
-- Treat invoice and payment information as sensitive business data.
-- Review access controls before exposing the application publicly.
+Before sharing a deployed instance:
 
-## Project Status
+1. Set the frontend API base URL to the deployed API.
+2. Configure required environment variables and Firestore credentials in the host.
+3. Confirm the deployed service can access Firestore.
+4. Test upload, retrieval, deletion, and payment recording.
+5. Confirm payment history survives a page reload and a fresh deployment.
+6. Avoid uploading confidential invoices to a public demo.
+
+## Known verification item
+
+Payment history is represented in the interface, but the complete save-and-reload flow should be verified against the deployed API and Firestore configuration before relying on it for business records.
+
+## Results and evaluation
+
+No extraction-accuracy or benchmark figure is published here because a documented evaluation result has not yet been added. Add a measured result only after testing against a labeled set of invoices, and state the dataset size and what counts as a correct extraction.
+
+## License
+
+No license has been specified yet. Until a license is added to the repository, others should not assume they have permission to reuse, modify, or redistribute this code. Add a `LICENSE` file if you intend to publish it under an open-source license.
+
+## Project status
 
 InvoiceIQ is under active development. Features and deployment configuration may evolve.
