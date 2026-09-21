@@ -5,7 +5,6 @@
 **InvoiceIQ** is a PDF invoice-processing and analytics app for teams that handle supplier and customer invoices. It reduces manual data entry by extracting invoice details, checking financial consistency, storing records, and surfacing totals, outstanding balances, and payment activity in a dashboard.
 
 
-
 ## What it does
 
 - Extracts invoice text from PDFs with PyMuPDF.
@@ -20,16 +19,16 @@
 
 ## Architecture
 
-```mermaid
-flowchart TD
-    A[Invoice PDF] --> B[PDF text extraction]
-    B --> C[Parsing: parties, items, taxes, totals]
-    C --> D[Validation]
-    D --> E[Firestore]
-    E --> F[Analytics and query layer]
-    F --> G[FastAPI]
-    G --> H[NiceGUI frontend]
-    H --> I[Dashboard, invoice views, payment UI, exports]
+Invoice PDFs flow through extraction and parsing, validation, and Firestore persistence; the analytics/query layer then supplies data to the FastAPI service and NiceGUI interface.
+
+```text
+Invoice PDF
+    → Extraction and parsing
+    → Validation
+    → Firestore
+    → Analytics and query layer
+    → FastAPI
+    → NiceGUI dashboard and invoice UI
 ```
 
 ## Tech stack
@@ -63,7 +62,7 @@ Open the local frontend URL printed in the terminal. Make sure the frontend API 
 
 ### Requirements
 
-- Python version: use the version supported by your dependencies and hosting environment. Pin the exact tested version here after checking your local environment and deployment configuration.
+- Python 3.x, with the exact minimum version determined by the project's dependencies and deployment runtime.
 - A Firebase project with Cloud Firestore enabled.
 - Firebase credentials available to the local runtime.
 
@@ -110,19 +109,9 @@ Use the exact environment-variable names and credential setup documented in `.en
 
 **Never commit `.env`, Firebase service-account JSON files, private keys, or real customer invoices.** For hosted deployments, configure secrets through the hosting provider.
 
-### 5. Start the API and frontend
+### 5. Start the application
 
-Start the API in one terminal:
-
-```powershell
-python -m uvicorn api.main:app --reload
-```
-
-Start the frontend from the repository root in another terminal:
-
-```powershell
-python -m frontend.app
-```
+See **Quick Start** above for the API and frontend commands.
 
 ## Run Tests
 
