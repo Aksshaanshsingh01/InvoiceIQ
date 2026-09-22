@@ -500,6 +500,9 @@ def record_invoice_payment(
             invoice_id,
             payment.payment_amount,
             DEFAULT_DATABASE,
+            payment_method=payment.payment_method,
+            reference=payment.reference,
+            notes=payment.notes,
         )
 
     except ValueError as exc:
@@ -527,8 +530,16 @@ def record_invoice_payment(
         "invoice": dict(updated_invoice),
     }
 
+# ============================================================
+# GET PAYMENT HISTORY
+# ============================================================
+
 @app.get("/invoices/{invoice_id}/payments")
 def get_invoice_payment_history(invoice_id: str):
+    """
+    Return all payment transactions recorded against an invoice.
+    """
+
     try:
         payments = get_payment_history(
             invoice_id,

@@ -2555,8 +2555,18 @@ def invoice_detail_page(invoice_id: str):
                             )
 
                 else:
+                    try:
+                        error_data = payment_response.json()
+                        error_message = error_data.get(
+                            "detail",
+                            payment_response.text,
+                        )
+                    except Exception:
+                        error_message = payment_response.text
+
                     ui.label(
-                        "Unable to load payment history."
+                        f"Unable to load payment history: "
+                        f"{error_message}"
                     ).classes(
                         "text-red-500"
                     )
