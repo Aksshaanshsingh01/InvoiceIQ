@@ -8,7 +8,7 @@ from extraction.invoice_extractor import (
     extract_invoice,
 )
 
-from database.db import(
+from database.db import (
     initialize_database,
     insert_validated_invoice,
     invoice_exists,
@@ -18,6 +18,8 @@ from database.db import(
     delete_invoice,
     get_database_summary,
     record_payment,
+    get_payment_history,
+    delete_payment,
 )
 
 
@@ -283,86 +285,231 @@ def test_delete_invoice_cascade(
         "taxes": 0,
     }
 
-def test_record_payment(
-    tmp_path,
-):
-    database = (
-        tmp_path / "test.db"
-    )
-
-    initialize_database(
-        database
-    )
-
-    invoice = extract_invoice(
-        "samples/Purchase Invoice 03.pdf"
-    )
-
-    invoice_id = insert_validated_invoice(
-        invoice,
-        "VALID",
-        database,
-    )
-
-    updated = record_payment(
-        invoice_id,
-        10000,
-        database,
-    )
-
-    assert updated["received_amount"] == 10000
-    assert updated["payment_status"] == "PARTIALLY_PAID"
-    assert updated["paid_at"] is None
-
-    updated = record_payment(
-        invoice_id,
-        invoice.total_amount - 10000,
-        database,
-    )
-
-    assert updated["received_amount"] == invoice.total_amount
-    assert updated["payment_status"] == "PAID"
-    assert updated["paid_at"] is not None
+# ============================================================
+# Test payment recording
+# ============================================================
 
 
+def test_record_payment():
+    """
+    Test recording multiple payments against a Firestore invoice.
+    """
 
-def test_record_payment_cannot_exceed_outstanding(
-    tmp_path,
-):
-    database = (
-        tmp_path / "test.db"
-    )
-
-    initialize_database(
-        database
-    )
+    database = "firestore"
 
     invoice = extract_invoice(
         "samples/Purchase Invoice 03.pdf"
     )
 
-    invoice_id = insert_validated_invoice(
-        invoice,
-        "VALID",
-        database,
+    # Use a unique invoice number so the test does not
+    # collide with an existing Firestore document.
+    original_invoice_number = invoice.invoice_number
+
+    invoice.invoice_number = (
+        f"{original_invoice_number}-TEST-PAYMENT"
     )
 
-    record_payment(
-        invoice_id,
-        10000,
-        database,
+    try:
+
+        invoice_id = insert_validated_invoice(
+            invoice,
+            "VALID",
+            database,
+        )
+
+        # ----------------------------------------------------
+        # First payment
+        # ----------------------------------------------------
+
+        updated = record_payment(
+            invoice_id,
+            10000,
+            database,
+        )
+
+        assert (
+            updated["received_amount"]
+            == 10000
+        )
+
+        assert (
+            updated["payment_status"]
+            == "PARTIALLY_PAID"
+        )
+
+        assert (
+            updated["paid_at"]
+            is None
+        )
+
+        # ----------------------------------------------------
+        # Verify payment transaction exists
+        # ----------------------------------------------------
+
+        payments = get_payment_history(
+            invoice_id,
+            database,
+        )
+
+        assert len(payments) == 1
+
+        assert (
+            payments[0]["payment_amount"]
+            == 10000
+        )
+
+        # ----------------------------------------------------
+        # Second payment - complete invoice
+        # ----------------------------------------------------
+
+        remaining_amount = (
+            invoice.total_amount - 10000
+        )
+
+        updated = record_payment(
+            invoice_id,
+            remaining_amount,
+            database,
+        )
+
+        assert (
+            updated["received_amount"]
+            == invoice.total_amount
+        )
+
+        assert (
+            updated["payment_status"]
+            == "PAID"
+        )
+
+        assert (
+            updated["paid_at"]
+            is not None
+        )
+
+        # ----------------------------------------------------
+        # Verify both transactions exist
+        # ----------------------------------------------------
+
+        payments = get_payment_history(
+            invoice_id,
+            database,
+        )
+
+        assert len(payments) == 2
+
+    finally:
+
+        # ----------------------------------------------------
+        # Cleanup payment transactions
+        # ----------------------------------------------------
+
+        payments = get_payment_history(
+            invoice_id,
+            database,
+        )
+
+        for payment in payments:
+            delete_payment(
+                invoice_id,
+                payment["id"],
+                database,
+            )
+
+        # ----------------------------------------------------
+        # Cleanup invoice
+        # ----------------------------------------------------
+
+        delete_invoice(
+            invoice_id,
+            database,
+        )
+
+
+# ============================================================
+# Test payment cannot exceed outstanding amount
+# ============================================================
+
+
+def test_record_payment_cannot_exceed_outstanding():
+
+    """
+    Verify that a payment larger than the outstanding
+    invoice amount is rejected.
+    """
+
+    database = "firestore"
+
+    invoice = extract_invoice(
+        "samples/Purchase Invoice 03.pdf"
     )
 
-    outstanding = (
-        invoice.total_amount - 10000
+    original_invoice_number = invoice.invoice_number
+
+    invoice.invoice_number = (
+        f"{original_invoice_number}-TEST-OVERPAY"
     )
 
-    with pytest.raises(
-        ValueError,
-        match="outstanding amount",
-    ):
+    try:
+
+        invoice_id = insert_validated_invoice(
+            invoice,
+            "VALID",
+            database,
+        )
+
+        # ----------------------------------------------------
+        # Record initial payment
+        # ----------------------------------------------------
+
         record_payment(
             invoice_id,
-            outstanding + 1,
+            10000,
+            database,
+        )
+
+        outstanding = (
+            invoice.total_amount - 10000
+        )
+
+        # ----------------------------------------------------
+        # Attempt to overpay
+        # ----------------------------------------------------
+
+        with pytest.raises(
+            ValueError,
+            match="outstanding amount",
+        ):
+
+            record_payment(
+                invoice_id,
+                outstanding + 1,
+                database,
+            )
+
+    finally:
+
+        # ----------------------------------------------------
+        # Cleanup payment transactions
+        # ----------------------------------------------------
+
+        payments = get_payment_history(
+            invoice_id,
+            database,
+        )
+
+        for payment in payments:
+            delete_payment(
+                invoice_id,
+                payment["id"],
+                database,
+            )
+
+        # ----------------------------------------------------
+        # Cleanup invoice
+        # ----------------------------------------------------
+
+        delete_invoice(
+            invoice_id,
             database,
         )

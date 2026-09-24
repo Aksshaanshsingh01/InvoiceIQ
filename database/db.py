@@ -467,6 +467,8 @@ def get_invoice_by_id(
     if not snapshot.exists:
         return None
 
+    invoice = _snapshot_to_dict(snapshot)
+
     return _snapshot_to_dict(snapshot)
 
 
@@ -553,6 +555,112 @@ def delete_invoice(
 
     reference.delete()
     return True
+
+def sync_payment_state(
+    invoice_id,
+    database=DEFAULT_DATABASE,
+):
+    """
+    Recalculate invoice payment state from the actual
+    payment transactions stored in Firestore.
+
+    invoice_payments is the source of truth for payments
+    recorded through InvoiceIQ.
+    """
+
+    if database != "firestore":
+        raise ValueError(
+            "Payment synchronization is currently supported only for Firestore."
+        )
+
+    db = get_firestore_client()
+
+    invoice_ref = (
+        db.collection(FIRESTORE_COLLECTION)
+        .document(str(invoice_id))
+    )
+
+    invoice_snapshot = invoice_ref.get()
+
+    if not invoice_snapshot.exists:
+        raise ValueError(
+            f"Invoice {invoice_id} not found."
+        )
+
+    invoice = invoice_snapshot.to_dict() or {}
+
+    total_amount = float(
+        invoice.get("total_amount") or 0
+    )
+
+    # ---------------------------------------------------------
+    # Fetch actual payment transactions
+    # ---------------------------------------------------------
+
+    payment_documents = (
+        db.collection(FIRESTORE_PAYMENTS_COLLECTION)
+        .where(
+            "invoice_id",
+            "==",
+            str(invoice_id),
+        )
+        .stream()
+    )
+
+    received_amount = 0.0
+
+    for payment_document in payment_documents:
+        payment = payment_document.to_dict() or {}
+
+        received_amount += float(
+            payment.get("payment_amount") or 0
+        )
+
+    received_amount = round(
+        received_amount,
+        2,
+    )
+
+    # ---------------------------------------------------------
+    # Derive payment status
+    # ---------------------------------------------------------
+
+    if received_amount <= 0:
+        received_amount = 0.0
+        payment_status = "UNPAID"
+        paid_at = None
+
+    elif received_amount >= total_amount - 0.01:
+        received_amount = total_amount
+        payment_status = "PAID"
+
+        paid_at = (
+            invoice.get("paid_at")
+            or datetime.now(
+                timezone.utc
+            ).isoformat()
+        )
+
+    else:
+        payment_status = "PARTIALLY_PAID"
+        paid_at = None
+
+    # ---------------------------------------------------------
+    # Update cached invoice payment state
+    # ---------------------------------------------------------
+
+    invoice_ref.update({
+        "received_amount": received_amount,
+        "payment_status": payment_status,
+        "paid_at": paid_at,
+    })
+
+    invoice["id"] = invoice_id
+    invoice["received_amount"] = received_amount
+    invoice["payment_status"] = payment_status
+    invoice["paid_at"] = paid_at
+
+    return invoice
 
 def record_payment(
     invoice_id,
@@ -718,6 +826,151 @@ def get_payment_history(invoice_id, database=DEFAULT_DATABASE):
     )
 
     return payments 
+
+def delete_payment(
+    invoice_id,
+    payment_id,
+    database=DEFAULT_DATABASE,
+):
+    """
+    Delete a payment transaction and recalculate
+    the invoice payment state.
+    """
+
+    if database != "firestore":
+        raise ValueError(
+            "Payment deletion is currently supported only for Firestore."
+        )
+
+    db = get_firestore_client()
+
+    # ---------------------------------------------------------
+    # Verify invoice exists
+    # ---------------------------------------------------------
+
+    invoice_ref = (
+        db.collection(FIRESTORE_COLLECTION)
+        .document(str(invoice_id))
+    )
+
+    invoice_snapshot = invoice_ref.get()
+
+    if not invoice_snapshot.exists:
+        raise ValueError(
+            f"Invoice {invoice_id} not found."
+        )
+
+    # ---------------------------------------------------------
+    # Get payment
+    # ---------------------------------------------------------
+
+    payment_ref = (
+        db.collection(FIRESTORE_PAYMENTS_COLLECTION)
+        .document(str(payment_id))
+    )
+
+    payment_snapshot = payment_ref.get()
+
+    if not payment_snapshot.exists:
+        raise ValueError(
+            f"Payment {payment_id} not found."
+        )
+
+    payment = (
+        payment_snapshot.to_dict()
+        or {}
+    )
+
+    # ---------------------------------------------------------
+    # Verify payment belongs to this invoice
+    # ---------------------------------------------------------
+
+    if str(
+        payment.get("invoice_id")
+    ) != str(invoice_id):
+
+        raise ValueError(
+            "Payment does not belong to this invoice."
+        )
+
+    # ---------------------------------------------------------
+    # Delete payment transaction
+    # ---------------------------------------------------------
+
+    payment_ref.delete()
+
+    # ---------------------------------------------------------
+    # Recalculate invoice state
+    # ---------------------------------------------------------
+
+    return sync_payment_state(
+        invoice_id,
+        database,
+    )
+
+# ============================================================
+# DELETE_Payment
+# ============================================================
+
+
+def delete_payment(
+    invoice_id,
+    payment_id,
+    database=DEFAULT_DATABASE,
+):
+    """
+    Delete a payment transaction and immediately
+    recalculate the invoice payment state.
+    """
+
+    if database != "firestore":
+        raise ValueError(
+            "Payment deletion is currently supported only for Firestore."
+        )
+
+    db = get_firestore_client()
+
+    invoice_ref = (
+        db.collection(FIRESTORE_COLLECTION)
+        .document(str(invoice_id))
+    )
+
+    invoice_snapshot = invoice_ref.get()
+
+    if not invoice_snapshot.exists:
+        raise ValueError(
+            f"Invoice {invoice_id} not found."
+        )
+
+    payment_ref = (
+        db.collection(FIRESTORE_PAYMENTS_COLLECTION)
+        .document(str(payment_id))
+    )
+
+    payment_snapshot = payment_ref.get()
+
+    if not payment_snapshot.exists:
+        raise ValueError(
+            f"Payment {payment_id} not found."
+        )
+
+    payment = payment_snapshot.to_dict() or {}
+
+    # Security/integrity check:
+    # make sure this payment belongs to this invoice.
+    if str(payment.get("invoice_id")) != str(invoice_id):
+        raise ValueError(
+            "Payment does not belong to this invoice."
+        )
+
+    # Delete transaction.
+    payment_ref.delete()
+
+    # Recalculate invoice from remaining transactions.
+    return sync_payment_state(
+        invoice_id,
+        database,
+    )
 
 # ============================================================
 # DATABASE SUMMARY

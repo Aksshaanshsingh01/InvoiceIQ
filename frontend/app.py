@@ -16,6 +16,7 @@ from frontend.api_client import (
     delete_invoice,
     record_payment,
     get_payment_history,
+    delete_payment,
 )
 
 from datetime import datetime, date
@@ -24,6 +25,82 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# ============================================================
+# GLOBAL CSS (injected once, not per-page-load)
+# ============================================================
+
+ui.add_css("""
+.upcoming-due-table .q-table {
+    width: 100%;
+    table-layout: fixed;
+}
+
+/* Customer */
+.upcoming-due-table th:nth-child(1),
+.upcoming-due-table td:nth-child(1) {
+    width: 28%;
+    min-width: 0;
+}
+
+/* Invoice */
+.upcoming-due-table th:nth-child(2),
+.upcoming-due-table td:nth-child(2) {
+    width: 17%;
+    min-width: 0;
+}
+
+/* Due Date */
+.upcoming-due-table th:nth-child(3),
+.upcoming-due-table td:nth-child(3) {
+    width: 13%;
+    min-width: 0;
+}
+
+/* Outstanding */
+.upcoming-due-table th:nth-child(4),
+.upcoming-due-table td:nth-child(4) {
+    width: 17%;
+    min-width: 0;
+    padding-right: 20px;
+}
+
+/* Payment */
+.upcoming-due-table th:nth-child(5),
+.upcoming-due-table td:nth-child(5) {
+    width: 13%;
+    min-width: 0;
+    padding-left: 10px;
+}
+
+/* Due Status */
+.upcoming-due-table th:nth-child(6),
+.upcoming-due-table td:nth-child(6) {
+    width: 12%;
+    min-width: 0;
+    padding-left: 10px;
+}
+
+/* Prevent long customer names from breaking the table. */
+.upcoming-due-table td:nth-child(1) {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Keep invoice/date/payment/status values on one line. */
+.upcoming-due-table td:nth-child(2),
+.upcoming-due-table td:nth-child(3),
+.upcoming-due-table td:nth-child(5),
+.upcoming-due-table td:nth-child(6) {
+    white-space: nowrap;
+}
+
+/* Keep currency aligned cleanly. */
+.upcoming-due-table td:nth-child(4) {
+    white-space: nowrap;
+}
+""", shared=True)
 
 # ============================================================
 # HELPERS
@@ -352,7 +429,7 @@ def dashboard_page():
                 }
             ).classes("w-full h-72")
 
-                # --------------------------------------------------------
+        # --------------------------------------------------------
         # Receivables Due & Overdue
         # --------------------------------------------------------
 
@@ -578,82 +655,6 @@ def dashboard_page():
                         }
                     )
 
-                # ----------------------------------------------------
-                # Table styling
-                # ----------------------------------------------------
-
-                ui.add_css("""
-                .upcoming-due-table .q-table {
-                    width: 100%;
-                    table-layout: fixed;
-                }
-
-                /* Customer */
-                .upcoming-due-table th:nth-child(1),
-                .upcoming-due-table td:nth-child(1) {
-                    width: 28%;
-                    min-width: 0;
-                }
-
-                /* Invoice */
-                .upcoming-due-table th:nth-child(2),
-                .upcoming-due-table td:nth-child(2) {
-                    width: 17%;
-                    min-width: 0;
-                }
-
-                /* Due Date */
-                .upcoming-due-table th:nth-child(3),
-                .upcoming-due-table td:nth-child(3) {
-                    width: 13%;
-                    min-width: 0;
-                }
-
-                /* Outstanding */
-                .upcoming-due-table th:nth-child(4),
-                .upcoming-due-table td:nth-child(4) {
-                    width: 17%;
-                    min-width: 0;
-                    padding-right: 20px;
-                }
-
-                /* Payment */
-                .upcoming-due-table th:nth-child(5),
-                .upcoming-due-table td:nth-child(5) {
-                    width: 13%;
-                    min-width: 0;
-                    padding-left: 10px;
-                }
-
-                /* Due Status */
-                .upcoming-due-table th:nth-child(6),
-                .upcoming-due-table td:nth-child(6) {
-                    width: 12%;
-                    min-width: 0;
-                    padding-left: 10px;
-                }
-
-                /* Prevent long customer names from breaking the table. */
-                .upcoming-due-table td:nth-child(1) {
-                    white-space: nowrap;
-                    overflow: hidden;
-                    text-overflow: ellipsis;
-                }
-
-                /* Keep invoice/date/payment/status values on one line. */
-                .upcoming-due-table td:nth-child(2),
-                .upcoming-due-table td:nth-child(3),
-                .upcoming-due-table td:nth-child(5),
-                .upcoming-due-table td:nth-child(6) {
-                    white-space: nowrap;
-                }
-
-                /* Keep currency aligned cleanly. */
-                .upcoming-due-table td:nth-child(4) {
-                    white-space: nowrap;
-                }
-                """)
-
                 ui.table(
                     columns=due_date_columns,
                     rows=due_date_rows,
@@ -678,7 +679,7 @@ def dashboard_page():
                         "No outstanding sales receivables."
                     ).classes(
                         "text-gray-500 mt-2"
-                    ) 
+                    )
 
         with ui.grid(columns=2).classes(
             "w-full gap-4"
@@ -1661,6 +1662,8 @@ def invoice_detail_page(invoice_id: str):
         # ----------------------------------------------------
         # Invoice Information
         # ----------------------------------------------------
+        # (FIX: the field grid and source-file block now live
+        # INSIDE this card instead of being dedented as siblings.)
 
         with ui.card().classes(
             "w-full"
@@ -1676,7 +1679,7 @@ def invoice_detail_page(invoice_id: str):
             # Core invoice information
             # ------------------------------------------------
 
-        with ui.grid(columns=3).classes(
+            with ui.grid(columns=3).classes(
                 "w-full"
             ):
 
@@ -1740,7 +1743,7 @@ def invoice_detail_page(invoice_id: str):
             # Source file
             # ------------------------------------------------
 
-        source_file = str(
+            source_file = str(
                 invoice.get(
                     "source_file",
                     "-"
@@ -1749,14 +1752,14 @@ def invoice_detail_page(invoice_id: str):
 
             # Show only the filename, not the internal
             # server filesystem path.
-        source_filename = (
-            source_file
-            .replace("\\", "/")
-            .rsplit("/", 1)[-1]
+            source_filename = (
+                source_file
+                .replace("\\", "/")
+                .rsplit("/", 1)[-1]
             )
 
-        with ui.column().classes(
-            "w-full mt-5"
+            with ui.column().classes(
+                "w-full mt-5"
             ):
 
                 ui.label(
@@ -2026,7 +2029,7 @@ def invoice_detail_page(invoice_id: str):
                 "text-gray-500"
             )
 
-                # ----------------------------------------------------
+        # ----------------------------------------------------
         # Payment & Totals
         # ----------------------------------------------------
 
@@ -2417,6 +2420,8 @@ def invoice_detail_page(invoice_id: str):
                             "text-sm text-green-600 mt-1"
                         )
 
+
+
         # ----------------------------------------------------
         # Payment History
         # ----------------------------------------------------
@@ -2441,14 +2446,187 @@ def invoice_detail_page(invoice_id: str):
                     invoice_id
                 )
 
-                if payment_response.status_code == 200:
+                if payment_response.status_code != 200:
+                    try:
+                        error_data = payment_response.json()
+                        error_message = error_data.get(
+                            "detail",
+                            payment_response.text,
+                        )
+                    except Exception:
+                        error_message = payment_response.text
+
+                    ui.label(
+                        "Unable to load payment history: "
+                        f"{error_message}"
+                    ).classes(
+                        "text-red-500"
+                    )
+
+                else:
                     payment_data = payment_response.json()
+
                     payments = payment_data.get(
                         "payments",
                         []
                     )
 
-                    if payments:
+                    if not payments:
+                        with ui.column().classes(
+                            "w-full items-center justify-center py-8"
+                        ):
+                            ui.icon(
+                                "payments"
+                            ).classes(
+                                "text-5xl text-gray-300"
+                            )
+
+                            ui.label(
+                                "No payment transactions recorded yet."
+                            ).classes(
+                                "text-gray-500 mt-2"
+                            )
+
+                    else:
+
+                        # ------------------------------------------------
+                        # Delete payment
+                        # ------------------------------------------------
+
+                        async def perform_delete_payment(
+                            payment_id,
+                            payment_amount,
+                        ):
+                            try:
+                                response = await run.io_bound(
+                                    delete_payment,
+                                    invoice_id,
+                                    payment_id,
+                                )
+
+                                if response.status_code == 200:
+                                    ui.notify(
+                                        (
+                                            "Payment of "
+                                            f"{format_currency(payment_amount)} "
+                                            "deleted successfully."
+                                        ),
+                                        type="positive",
+                                    )
+
+                                    # Reload the invoice so that:
+                                    # received_amount
+                                    # outstanding_amount
+                                    # payment_status
+                                    # payment history
+                                    # are all refreshed from the backend.
+
+                                    ui.navigate.to(
+                                        f"/invoices/{invoice_id}"
+                                    )
+
+                                    return
+
+                                try:
+                                    error_data = response.json()
+
+                                    error_message = error_data.get(
+                                        "detail",
+                                        response.text,
+                                    )
+
+                                except Exception:
+                                    error_message = response.text
+
+                                ui.notify(
+                                    (
+                                        "Unable to delete payment: "
+                                        f"{error_message}"
+                                    ),
+                                    type="negative",
+                                )
+
+                            except Exception as error:
+                                ui.notify(
+                                    (
+                                        "Unable to delete payment: "
+                                        f"{error}"
+                                    ),
+                                    type="negative",
+                                )
+
+                        # ------------------------------------------------
+                        # Confirmation dialog
+                        # ------------------------------------------------
+
+                        def confirm_delete_payment(
+                            payment_id,
+                            payment_amount,
+                        ):
+                            with ui.dialog() as dialog:
+
+                                with ui.card().classes(
+                                    "w-full max-w-md"
+                                ):
+
+                                    ui.label(
+                                        "Remove Payment?"
+                                    ).classes(
+                                        "text-xl font-semibold"
+                                    )
+
+                                    ui.label(
+                                        (
+                                            "Are you sure you want to remove "
+                                            f"the payment of "
+                                            f"{format_currency(payment_amount)}?"
+                                        )
+                                    ).classes(
+                                        "text-gray-600 mt-2"
+                                    )
+
+                                    ui.label(
+                                        (
+                                        "This will permanently delete the "
+                                        "payment transaction and recalculate "
+                                        "the invoice payment status."
+                                    )
+                                    ).classes(
+                                        "text-sm text-red-600 mt-2"
+                                    )
+
+                                    with ui.row().classes(
+                                        "w-full justify-end gap-2 mt-5"
+                                    ):
+
+                                        ui.button(
+                                            "CANCEL",
+                                            on_click=dialog.close,
+                                        ).props(
+                                            "flat"
+                                        )
+
+                                        async def remove_payment():
+                                            dialog.close()
+
+                                            await perform_delete_payment(
+                                                payment_id,
+                                                payment_amount,
+                                            )
+
+                                        ui.button(
+                                            "REMOVE",
+                                            on_click=remove_payment,
+                                        ).props(
+                                            "color=negative unelevated"
+                                        )
+
+                            dialog.open()
+
+                        # ------------------------------------------------
+                        # Payment table
+                        # ------------------------------------------------
+
                         payment_columns = [
                             {
                                 "name": "payment_date",
@@ -2480,11 +2658,28 @@ def invoice_detail_page(invoice_id: str):
                                 "field": "notes",
                                 "align": "left",
                             },
+                            {
+                                "name": "actions",
+                                "label": "Action",
+                                "field": "actions",
+                                "align": "center",
+                            },
                         ]
 
                         payment_rows = []
 
                         for payment in payments:
+
+                            payment_id = payment.get(
+                                "id"
+                            )
+
+                            payment_amount = float(
+                                payment.get(
+                                    "payment_amount"
+                                ) or 0
+                            )
+
                             payment_date = str(
                                 payment.get(
                                     "payment_date",
@@ -2494,91 +2689,131 @@ def invoice_detail_page(invoice_id: str):
 
                             if "T" in payment_date:
                                 payment_date = (
-                                    payment_date
-                                    .split("T")[0]
+                                    payment_date.split("T")[0]
                                 )
 
-                            payment_rows.append({
-                                "payment_date": payment_date,
-                                "payment_amount": format_currency(
-                                    float(
+                            payment_rows.append(
+                                {
+                                    "payment_id": payment_id,
+
+                                    "payment_date": payment_date,
+
+                                    "payment_amount": format_currency(
+                                        payment_amount
+                                    ),
+
+                                    "payment_method": (
                                         payment.get(
-                                            "payment_amount"
-                                        ) or 0
-                                    )
-                                ),
-                                "payment_method": (
-                                    payment.get(
-                                        "payment_method"
-                                    )
-                                    or "-"
-                                ),
-                                "reference": (
-                                    payment.get(
-                                        "reference"
-                                    )
-                                    or "-"
-                                ),
-                                "notes": (
-                                    payment.get(
-                                        "notes"
-                                    )
-                                    or "-"
-                                ),
-                            })
+                                            "payment_method"
+                                        )
+                                        or "-"
+                                    ),
+
+                                    "reference": (
+                                        payment.get(
+                                            "reference"
+                                        )
+                                        or "-"
+                                    ),
+
+                                    "notes": (
+                                        payment.get(
+                                            "notes"
+                                        )
+                                        or "-"
+                                    ),
+
+                                    "actions": "",
+                                }
+                            )
 
                         with ui.element("div").classes(
                             "w-full overflow-x-auto"
                         ):
-                            ui.table(
+
+                            table = ui.table(
                                 columns=payment_columns,
                                 rows=payment_rows,
-                                row_key="payment_date",
+                                row_key="payment_id",
                             ).classes(
                                 "w-full"
                             )
 
-                    else:
-                        with ui.column().classes(
-                            "w-full items-center justify-center py-8"
-                        ):
-                            ui.icon(
-                                "payments"
-                            ).classes(
-                                "text-5xl text-gray-300"
+                            table.add_slot(
+                                "body-cell-actions",
+                                r"""
+                                <q-td :props="props">
+                                    <q-btn
+                                        flat
+                                        dense
+                                        color="negative"
+                                        icon="delete"
+                                        label="Remove"
+                                        @click="$parent.$emit(
+                                            'remove-payment',
+                                            props.row
+                                        )"
+                                    />
+                                </q-td>
+                                """,
                             )
 
-                            ui.label(
-                                "No payment transactions recorded yet."
-                            ).classes(
-                                "text-gray-500 mt-2"
+                            async def handle_remove_payment(event):
+
+                                row = event.args or {}
+
+                                payment_id = row.get(
+                                    "payment_id"
+                                )
+
+                                if not payment_id:
+                                    ui.notify(
+                                        "Payment ID is missing.",
+                                        type="negative",
+                                    )
+                                    return
+
+                                amount_text = str(
+                                    row.get(
+                                        "payment_amount",
+                                        "0",
+                                    )
+                                )
+
+                                amount_text = (
+                                    amount_text
+                                    .replace("₹", "")
+                                    .replace(",", "")
+                                    .strip()
+                                )
+
+                                try:
+                                    payment_amount = float(
+                                        amount_text
+                                    )
+                                except ValueError:
+                                    payment_amount = 0
+
+                                confirm_delete_payment(
+                                    payment_id,
+                                    payment_amount,
+                                )
+
+                            table.on(
+                                "remove-payment",
+                                handle_remove_payment,
                             )
-
-                else:
-                    try:
-                        error_data = payment_response.json()
-                        error_message = error_data.get(
-                            "detail",
-                            payment_response.text,
-                        )
-                    except Exception:
-                        error_message = payment_response.text
-
-                    ui.label(
-                        f"Unable to load payment history: "
-                        f"{error_message}"
-                    ).classes(
-                        "text-red-500"
-                    )
 
             except Exception as error:
+
                 ui.label(
                     f"Unable to load payment history: {error}"
                 ).classes(
                     "text-red-500"
                 )
 
-        # ============================================================
+
+# ============================================================
 # UPLOAD
 # ============================================================
 
@@ -2899,9 +3134,9 @@ def upload_page():
                             "text-red-600 mt-3"
                         )
 
-                        # ----------------------------------------------------
-                        # File Upload
-                        # ----------------------------------------------------
+            # ----------------------------------------------------
+            # File Upload
+            # ----------------------------------------------------
 
             ui.upload(
                 on_upload=handle_upload,

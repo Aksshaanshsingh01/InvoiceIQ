@@ -23,13 +23,16 @@ from pydantic import BaseModel
 
 from database.db import (
     DEFAULT_DATABASE,
-    initialize_database,
+    delete_invoice as delete_invoice_record,
+    delete_payment,
     get_all_invoices,
+    get_invoice_by_id,
     get_invoice_items,
     get_invoice_taxes,
-    delete_invoice as delete_invoice_record,
+    initialize_database,
     record_payment,
     get_payment_history,
+    sync_payment_state,
 )
 
 from database.queries import (
@@ -40,6 +43,11 @@ from database.queries import (
     get_invoices_by_seller_gstin,
     get_invoices_by_type,
     get_invoices_by_date_range,
+)
+
+from database.db import (
+    delete_payment,
+    sync_payment_state,
 )
 
 
@@ -430,11 +438,35 @@ def dashboard():
 @app.get("/invoices/{invoice_id}")
 def get_invoice(invoice_id: str):
     """
-    Return one invoice with its items and taxes.
+    Return one invoice with its items, taxes,
+    and freshly synchronized payment state.
     """
 
     # --------------------------------------------------------
-    # 1. Get invoice
+    # 1. Synchronize payment state from Firestore
+    # --------------------------------------------------------
+
+    try:
+        sync_payment_state(
+            invoice_id,
+            DEFAULT_DATABASE,
+        )
+    except ValueError as exc:
+        message = str(exc)
+
+        if "not found" in message.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=message,
+            ) from exc
+
+        raise HTTPException(
+            status_code=400,
+            detail=message,
+        ) from exc
+
+    # --------------------------------------------------------
+    # 2. Get fresh invoice
     # --------------------------------------------------------
 
     invoice = get_invoice_by_id(
@@ -449,7 +481,7 @@ def get_invoice(invoice_id: str):
         )
 
     # --------------------------------------------------------
-    # 2. Get invoice items
+    # 3. Get invoice items
     # --------------------------------------------------------
 
     items = get_invoice_items(
@@ -458,7 +490,7 @@ def get_invoice(invoice_id: str):
     )
 
     # --------------------------------------------------------
-    # 3. Get invoice taxes
+    # 4. Get invoice taxes
     # --------------------------------------------------------
 
     taxes = get_invoice_taxes(
@@ -467,7 +499,7 @@ def get_invoice(invoice_id: str):
     )
 
     # --------------------------------------------------------
-    # 4. Build response
+    # 5. Build response
     # --------------------------------------------------------
 
     return {
@@ -481,7 +513,6 @@ def get_invoice(invoice_id: str):
             for tax in taxes
         ],
     }
-
 # ============================================================
 # RECORD PAYMENT
 # ============================================================
@@ -555,6 +586,57 @@ def get_invoice_payment_history(invoice_id: str):
     return {
         "success": True,
         "payments": payments,
+    }
+
+# ============================================================
+# DELETE PAYMENT
+# ============================================================
+
+@app.delete(
+    "/invoices/{invoice_id}/payments/{payment_id}"
+)
+def delete_invoice_payment(
+    invoice_id: str,
+    payment_id: str,
+):
+    """
+    Delete a payment transaction and recalculate
+    the invoice payment state.
+    """
+
+    try:
+        updated_invoice = delete_payment(
+            invoice_id,
+            payment_id,
+            DEFAULT_DATABASE,
+        )
+
+    except ValueError as exc:
+
+        message = str(exc)
+
+        if "not found" in message.lower():
+            raise HTTPException(
+                status_code=404,
+                detail=message,
+            ) from exc
+
+        raise HTTPException(
+            status_code=400,
+            detail=message,
+        ) from exc
+
+    logger.info(
+        "Payment deleted for invoice %s: %s",
+        invoice_id,
+        payment_id,
+    )
+
+    return {
+        "success": True,
+        "status": "DELETED",
+        "payment_id": payment_id,
+        "invoice": dict(updated_invoice),
     }
 
 # ============================================================

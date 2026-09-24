@@ -81,6 +81,13 @@ def get_payment_history(invoice_id):
 
     return response  
 
+def delete_payment(invoice_id, payment_id):
+    response = requests.delete(
+        f"{API_BASE_URL}/invoices/{invoice_id}/payments/{payment_id}",
+        timeout=10,
+    )
+    return response
+
 def search_invoices(
     invoice_number=None,
     seller=None,
